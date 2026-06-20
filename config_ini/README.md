@@ -1,8 +1,8 @@
 # ConfigManager
 
-基于 M9A_Update_Assistant 项目实践的 Python INI 配置管理模块；
+基于 M9A_Update_Assistant 与 ALAS_Logs_Archive 项目实践的 Python INI 配置管理模块，提供：
 
-提供 **默认配置生成 → 加载/修复 → 版本迁移 → 验证** 的完整逻辑。
+- **默认配置生成 → 加载/修复 → 版本迁移 → 验证**
 
 ## 特性
 

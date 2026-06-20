@@ -1,8 +1,9 @@
 # Python SelfUpdater
 
 基于 M9A_Update_Assistant 项目实践的 Python 程序自我更新模块；
+为 Nuitka / PyInstaller 打包的 Windows exe 可执行文件提供：
 
-为 Nuitka / PyInstaller 打包的 Windows exe 提供**从 GitHub Release 获取新版 → 下载校验 → PowerShell 热替换 → 失败回滚**的完整逻辑。
+- **从 GitHub Release 获取新版 → 下载校验 → PowerShell 热替换 → 失败回滚**
 
 ## 特性
 
