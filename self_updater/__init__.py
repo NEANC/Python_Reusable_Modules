@@ -28,6 +28,14 @@
 """
 
 from .self_config import UpdateState
+from .self_progress import (
+    BAR_FG, BAR_AUX, BAR_OK, BAR_WARN, BAR_ERR, BAR_RST,
+    BAR_FORMAT,
+    create_progress_bar,
+    format_ok,
+    format_error,
+    format_warn,
+)
 from .self_updater import SelfUpdater
 from .self_utils import (
     calculate_sha256,
@@ -42,6 +50,10 @@ from .self_utils import (
 __all__ = [
     "SelfUpdater",
     "UpdateState",
+    "BAR_FG", "BAR_AUX", "BAR_OK", "BAR_WARN", "BAR_ERR", "BAR_RST",
+    "BAR_FORMAT",
+    "create_progress_bar",
+    "format_ok", "format_error", "format_warn",
     "calculate_sha256",
     "detect_package_type",
     "get_exe_path",
