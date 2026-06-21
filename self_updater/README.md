@@ -174,19 +174,19 @@ _cleanup_update_residue(logger)
 
 ### `SelfUpdater.__init__(...)`
 
-| 参数                  | 类型                 | 必填 | 说明                                                   |
-| --------------------- | -------------------- | ---- | ------------------------------------------------------ |
-| `github_repo`         | `str`                | 是   | GitHub 仓库，格式 `"owner/repo"`                       |
-| `asset_pattern`       | `str`                | 是   | exe asset 文件名正则，编译为 `re.compile()`            |
-| `app_name`            | `str`                | 是   | 应用名称，影响 PS1 脚本名和缓存目录名                  |
-| `current_version`     | `str`                | 是   | 当前版本号（如 `"v1.0.0"`）                            |
-| `proxy`               | `str`                | 是   | HTTP/HTTPS 代理地址，留空 `""` 则不使用                |
+| 参数                  | 类型                 | 必填 | 说明                                                    |
+| --------------------- | -------------------- | ---- | ------------------------------------------------------- |
+| `github_repo`         | `str`                | 是   | GitHub 仓库，格式 `"owner/repo"`                        |
+| `asset_pattern`       | `str`                | 是   | exe asset 文件名正则，编译为 `re.compile()`             |
+| `app_name`            | `str`                | 是   | 应用名称，影响 PS1 脚本名和缓存目录名                   |
+| `current_version`     | `str`                | 是   | 当前版本号（如 `"v1.0.0"`）                             |
+| `proxy`               | `str`                | 是   | HTTP/HTTPS 代理地址，留空 `""` 则不使用                 |
 | `temp_folder`         | `str`                | 否   | 临时文件存储目录；不传则自动解析（系统缓存 > 脚本目录） |
-| `logger`              | `logging.Logger`     | 是   | 日志记录器                                             |
-| `download_func`       | `(str, str) -> bool` | 否   | 自定义下载函数 `(url, save_path) -> bool`              |
-| `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认）或 `"stable"`             |
-| `is_bundled`          | `bool`               | 否   | 预检测的打包标记，避免重复调用 `detect_package_type()` |
-| `package_type`        | `str`                | 否   | 预检测的打包方式：`"Nuitka"` 或 `"PyInstaller"`        |
+| `logger`              | `logging.Logger`     | 是   | 日志记录器                                              |
+| `download_func`       | `(str, str) -> bool` | 否   | 自定义下载函数 `(url, save_path) -> bool`               |
+| `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认）或 `"stable"`              |
+| `is_bundled`          | `bool`               | 否   | 预检测的打包标记，避免重复调用 `detect_package_type()`  |
+| `package_type`        | `str`                | 否   | 预检测的打包方式：`"Nuitka"` 或 `"PyInstaller"`         |
 
 ### `SelfUpdater.check_self_update(force=False) -> bool`
 
@@ -205,6 +205,11 @@ _cleanup_update_residue(logger)
 ### `SelfUpdater.clean_update_cache(...)`
 
 清理自更新下载缓存 `UpdateCache/` 目录。
+
+### `SelfUpdater._cleanup_update_residue(logger)`
+
+清理上次成功更新后的残留文件（`.backup.exe`、`.new.exe`、PS1 脚本、lock 文件、日志、`update_state.ini`）。
+在程序正常启动时调用，确保 exe 目录保持整洁。
 
 ### `SelfUpdater.rollback(logger=None) -> bool`
 
@@ -228,19 +233,19 @@ _cleanup_update_residue(logger)
 
 ## 进度条 (`self_updater.self_progress`)
 
-| 常量/函数 | 说明 |
-|---|---|
-| `BAR_FG` | 进度条主体颜色（白色加粗） |
-| `BAR_AUX` | 辅助信息颜色（浅灰色） |
-| `BAR_OK` | 完成状态颜色（亮绿色） |
-| `BAR_WARN` | 警告状态颜色（亮黄色加粗） |
-| `BAR_ERR` | 错误/失败颜色（亮红色加粗） |
-| `BAR_RST` | 颜色重置 |
-| `BAR_FORMAT` | 统一进度条格式字符串 |
-| `create_progress_bar(total, desc)` | 创建统一风格的 tqdm 进度条 |
-| `format_ok(action, source, dest, total)` | 格式化完成消息（亮绿色） |
-| `format_error(desc, reason)` | 格式化错误消息（亮红色加粗） |
-| `format_warn(msg)` | 格式化警告消息（亮黄色加粗） |
+| 常量/函数                                | 说明                         |
+| ---------------------------------------- | ---------------------------- |
+| `BAR_FG`                                 | 进度条主体颜色（白色加粗）   |
+| `BAR_AUX`                                | 辅助信息颜色（浅灰色）       |
+| `BAR_OK`                                 | 完成状态颜色（亮绿色）       |
+| `BAR_WARN`                               | 警告状态颜色（亮黄色加粗）   |
+| `BAR_ERR`                                | 错误/失败颜色（亮红色加粗）  |
+| `BAR_RST`                                | 颜色重置                     |
+| `BAR_FORMAT`                             | 统一进度条格式字符串         |
+| `create_progress_bar(total, desc)`       | 创建统一风格的 tqdm 进度条   |
+| `format_ok(action, source, dest, total)` | 格式化完成消息（亮绿色）     |
+| `format_error(desc, reason)`             | 格式化错误消息（亮红色加粗） |
+| `format_warn(msg)`                       | 格式化警告消息（亮黄色加粗） |
 
 ---
 
