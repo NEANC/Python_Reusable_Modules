@@ -20,7 +20,6 @@
         app_name="YourApp",
         current_version="v1.0.0",
         proxy="",
-        temp_folder="/tmp/your-app",
         logger=your_logger,
         download_func=your_download_with_progress,
     )

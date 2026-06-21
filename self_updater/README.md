@@ -59,7 +59,7 @@ updater = SelfUpdater(
     app_name="MyApp",                                                  # 应用名称
     current_version="v1.0.0",                                          # 当前版本号
     proxy="",                                                          # HTTP 代理（留空则不使用）
-    temp_folder="/tmp/MyApp",                                          # 临时目录
+    temp_folder="/tmp/MyApp",                                          # 可选：临时目录（不传则自动解析）
     logger=logger,
     download_func=your_download_with_progress,                         # 可选：注入带进度条的下载函数
     self_update_channel="preview",                                     # 'preview' 或 'stable'
@@ -89,9 +89,61 @@ parser.add_argument("--update", "--Update", action="store_true",
 parser.add_argument("--update-force", "--Update-force", "--Update-Force",
                     action="store_true", dest="update_force",
                     help="强制更新自身到最新版本")
+
+# ── 内部参数（必须添加，否则 PS1 脚本启动新版时参数不被识别） ──
+parser.add_argument("--self-update-verify", action="store_true", help=argparse.SUPPRESS)
+parser.add_argument("--expected-sha256", type=str, default="", help=argparse.SUPPRESS)
+parser.add_argument("--expected-version", type=str, default="", help=argparse.SUPPRESS)
+parser.add_argument("--retry-update", action="store_true", help=argparse.SUPPRESS)
+parser.add_argument("--update-failed", action="store_true", help=argparse.SUPPRESS)
+
 args = parser.parse_args()
 
-# ── 如果指定了自更新参数，仅执行自更新 ──
+# ── 新版验证模式（PS1 替换后触发） ──
+if args.self_update_verify:
+    exit_code = SelfUpdater.self_update_verify(
+        expected_sha256=args.expected_sha256,
+        expected_version=args.expected_version,
+    )
+    sys.exit(exit_code)
+
+# ── 重试更新模式（PS1 回滚后触发） ──
+if args.retry_update:
+    logger.info("正在重试自更新...")
+    is_bundled, package_type = detect_package_type()
+    updater = SelfUpdater(
+        github_repo="you/your-repo",
+        asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
+        app_name="YourApp",
+        current_version="v1.0.0",
+        proxy="",
+        # temp_folder 可选，不传则自动解析（系统缓存 > 脚本目录）
+        temp_folder="/tmp/your-app",
+        logger=logger,
+        is_bundled=is_bundled,
+        package_type=package_type,
+    )
+    need_exit = updater.check_self_update()
+    if need_exit:
+        sys.exit(0)
+    logger.error("重试更新失败，无法获取新版本")
+    return  # 或 sys.exit(1)
+
+# ── 更新失败模式（PS1 回滚耗尽后触发） ──
+if args.update_failed:
+    from self_updater import UpdateState
+    state = UpdateState.load()
+    if state:
+        failed_ver = state["new_version"]
+        logger.critical(f"自更新失败：版本 {failed_ver} 多次验证不通过")
+        print(f"\n软件自动更新失败，版本 {failed_ver} 已被标记为不可用。")
+        print("已回退到旧版本，后续将跳过该版本的自动更新。")
+    else:
+        logger.critical("自更新失败，但无法读取状态信息")
+    input("\n按任意键退出...")
+    sys.exit(1)
+
+# ── 仅检查自身更新 / 强制更新模式 ──
 if args.update or args.update_force:
     is_bundled, package_type = detect_package_type()
     updater = SelfUpdater(
@@ -100,18 +152,20 @@ if args.update or args.update_force:
         app_name="YourApp",
         current_version="v1.0.0",
         proxy="",
+        # temp_folder 可选，不传则自动解析（系统缓存 > 脚本目录）
         temp_folder="/tmp/your-app",
         logger=logger,
         is_bundled=is_bundled,
         package_type=package_type,
     )
-    need_exit = updater.check_self_update(force=args.update_force)
-    if need_exit:
+    if updater.check_self_update(force=args.update_force):
+        logger.info("已将新版本下载到临时文件夹，即将退出以完成更新...")
         sys.exit(0)
-    sys.exit(0)  # 普通检查 → 不更新 → 退出
+    input("\n按任意键退出...")
+    sys.exit(0)
 
-# ── 否则正常启动主逻辑 ──
-main()
+# ── 正常启动：清理上次更新残留 ──
+_cleanup_update_residue(logger)
 ```
 
 ---
@@ -127,7 +181,7 @@ main()
 | `app_name`            | `str`                | 是   | 应用名称，影响 PS1 脚本名和缓存目录名                  |
 | `current_version`     | `str`                | 是   | 当前版本号（如 `"v1.0.0"`）                            |
 | `proxy`               | `str`                | 是   | HTTP/HTTPS 代理地址，留空 `""` 则不使用                |
-| `temp_folder`         | `str`                | 是   | 临时文件存储目录                                       |
+| `temp_folder`         | `str`                | 否   | 临时文件存储目录；不传则自动解析（系统缓存 > 脚本目录） |
 | `logger`              | `logging.Logger`     | 是   | 日志记录器                                             |
 | `download_func`       | `(str, str) -> bool` | 否   | 自定义下载函数 `(url, save_path) -> bool`              |
 | `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认）或 `"stable"`             |
