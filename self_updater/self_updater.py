@@ -1094,6 +1094,50 @@ class SelfUpdater:
         return 0
 
     @staticmethod
+    def _cleanup_update_residue(logger: logging.Logger) -> None:
+        """
+        清理上次成功更新后的残留文件
+
+        Args:
+            logger: 日志记录器
+        """
+        state = UpdateState.load()
+        if not state:
+            return
+
+        current_state = state.get("State", "state", fallback="")
+        if current_state != "verified":
+            return
+
+        logger.info("清理上次更新残留文件...")
+        target_path = Path(state["target"])
+        script_dir = target_path.parent
+
+        cleanup_files = [
+            Path(state["backup_file"]),
+            script_dir / "update_started.lock",
+            script_dir / "update.log",
+        ]
+        # 通配删除所有可能的中间产物
+        for pattern in ["*_Update_Helper.ps1", "*_Update.ps1", "*.new.exe", "*.backup.exe"]:
+            for f in script_dir.glob(pattern):
+                cleanup_files.append(f)
+
+        for f in cleanup_files:
+            try:
+                if f.exists():
+                    f.unlink()
+                    logger.debug(f"已删除残留文件: {f}")
+            except OSError:
+                pass
+
+        # 最后删除状态文件自身
+        try:
+            state.delete()
+        except Exception:
+            pass
+
+    @staticmethod
     def clean_update_cache(temp_folder: str, logger: logging.Logger) -> None:
         """
         清理自更新缓存目录 UpdateCache
