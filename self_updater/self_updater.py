@@ -244,6 +244,38 @@ class SelfUpdater:
 
     # ── 公共方法 ──
 
+    def _check_system_environment(self) -> bool:
+        """
+        检查当前系统是否支持自我更新：
+          - Windows 操作系统
+          - PowerShell 5.1 或更高版本
+        """
+        if sys.platform != 'win32':
+            self.logger.critical("自我更新仅支持 Windows 操作系统")
+            return False
+
+        try:
+            result = subprocess.run(
+                ['powershell.exe', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if result.returncode != 0:
+                self.logger.critical("无法获取 PowerShell 版本信息")
+                return False
+            major_ver = int(result.stdout.strip())
+            if major_ver < 5:
+                self.logger.critical(
+                    f"PowerShell 版本过低: {major_ver}.x，需要 5.1 或更高版本"
+                )
+                return False
+            self.logger.debug(f"PowerShell 版本: {major_ver}.x，环境检查通过")
+        except (ValueError, subprocess.TimeoutExpired) as e:
+            self.logger.critical(f"检测 PowerShell 版本失败: {e}")
+            return False
+
+        return True
+
     def check_self_update(self, force: bool = False) -> bool:
         """
         检查并准备自身更新
@@ -255,6 +287,10 @@ class SelfUpdater:
             bool: 是否需要退出以完成更新
         """
         self.logger.info("开始检查软件版本...")
+
+        # ── 系统环境检查 ──
+        if not self._check_system_environment():
+            return False
 
         if self._is_bundled is None:
             self._is_bundled, self._package_type = detect_package_type()
