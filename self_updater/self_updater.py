@@ -51,8 +51,9 @@ class SelfUpdater:
     """自更新器，负责自我更新检查、下载、替换、回滚"""
 
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
-                 current_version: str, proxy: str, temp_folder: str,
+                 current_version: str, proxy: str,
                  logger: logging.Logger,
+                 temp_folder: Optional[str] = None,
                  download_func: Optional[Callable[[str, str], bool]] = None,
                  self_update_channel: str = 'preview',
                  is_bundled: Optional[bool] = None,
@@ -66,7 +67,7 @@ class SelfUpdater:
             app_name: 应用名称（用于 PS1 脚本和缓存目录命名）
             current_version: 当前版本号（如 v1.0.0）
             proxy: 代理地址（空字符串表示无代理）
-            temp_folder: 临时文件夹路径
+            temp_folder: 临时文件夹路径，不传则自动解析（系统缓存 > 脚本目录）
             logger: 日志记录器
             download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 requests 下载
             self_update_channel: 更新通道 ('preview', 'stable')
@@ -78,12 +79,23 @@ class SelfUpdater:
         self.app_name = app_name
         self.current_version = current_version
         self.proxy = proxy
-        self.temp_folder = temp_folder
+        self.temp_folder = self._resolve_temp_folder(temp_folder)
         self.logger = logger
         self._download_func = download_func or self._default_download
         self.self_update_channel = self_update_channel
         self._is_bundled = is_bundled
         self._package_type = package_type
+
+    def _resolve_temp_folder(self, temp_folder: Optional[str]) -> str:
+        """解析临时文件夹路径，若未指定则优先使用系统缓存目录，其次脚本目录"""
+        if temp_folder:
+            return temp_folder
+        # 优先使用系统 Temp 目录，以 app_name 命名子文件夹避免污染
+        sys_temp = os.environ.get('TEMP') or os.environ.get('TMP')
+        if sys_temp:
+            return os.path.join(sys_temp, self.app_name)
+        # 回退到脚本所在目录下的 TEMP 子文件夹，避免污染脚本目录
+        return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "TEMP")
 
     def _default_download(self, url: str, save_path: str) -> bool:
         """内置下载实现（无进度条），外部可注入带进度的下载函数覆盖"""
