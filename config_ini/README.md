@@ -120,16 +120,16 @@ print(config.get_attr_list("install_folder"))  # ["C:\MyApp"]
 | `default_sections`   | `dict`           | 否   | 默认节/键值对：`{"Section": {"key": "default"}}`                   |
 | `comments`           | `dict`           | 否   | 键注释：`{"Section.key": "注释"}`                                  |
 | `app_name`           | `str`            | 否   | 应用名（用于系统临时目录回退时子文件夹名）                         |
-| `first_run_callback` | `() -> None`     | 否   | 首次运行时生成默认配置后的回调（不传则 `input()` + `sys.exit(0)`） |
+| `first_run_callback` | `() -> None`     | 否   | 首次运行时生成默认配置后的回调（不传则直接 `sys.exit(0)`）          |
 
 ### 类型注册方法
 
-| 方法                     | 效果                                                   |
-| ------------------------ | ------------------------------------------------------ |
-| `register_path_key(key)` | `load()` 时对 `temp_folder` 调用 `resolve_temp_folder` |
-| `register_list_key(key)` | `get_attr_list()` 返回逗号分隔的列表                   |
-| `register_int_key(key)`  | `get_attr_int()` 返回 int                              |
-| `register_bool_key(key)` | `get_attr_bool()` 返回 bool                            |
+| 方法                     | 效果                                                                 |
+| ------------------------ | -------------------------------------------------------------------- |
+| `register_path_key(key)` | `load()` 时对注册的路径键调用 `resolve_temp_folder`；`temp_folder` 会额外确保目录存在 |
+| `register_list_key(key)` | `get_attr_list()` 返回逗号分隔的列表                                 |
+| `register_int_key(key)`  | `get_attr_int()` 返回 int                                            |
+| `register_bool_key(key)` | `get_attr_bool()` 返回 bool                                          |
 
 ### 读取方法
 
@@ -174,14 +174,15 @@ MIGRATIONS = [
 
 ## `resolve_temp_folder(…)`
 
-解析临时文件夹路径的便捷函数：
+解析临时文件夹路径的便捷函数。仅特殊处理空值和字面量 `Temp`，其他相对路径会按配置原样返回。
 
 ```python
 from config_ini import resolve_temp_folder
 
-# ''      → 系统 TEMP/AppName
-# 'Temp'  → 程序目录/Temp
-# '/abs'  → /abs
+# ''        → 系统 TEMP/AppName
+# 'Temp'    → 程序目录/Temp
+# '/abs'    → /abs
+# 'cache'   → cache
 path = resolve_temp_folder("Temp", app_name="MyApp")
 ```
 

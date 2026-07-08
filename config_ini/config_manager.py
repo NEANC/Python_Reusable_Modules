@@ -171,7 +171,6 @@ class ConfigManager:
         if self._first_run_callback:
             self._first_run_callback()
         else:
-            input("按任意键退出...")
             sys.exit(0)
 
     def _regenerate_config_file(self) -> None:
@@ -213,6 +212,12 @@ class ConfigManager:
                             lines.append(f'# {cl}')
                     lines.append(f'{key} = {val}')
                 lines.append('')
+
+        if self.config.has_section('__migrations__'):
+            lines.append('[__migrations__]')
+            for key, val in self.config.items('__migrations__'):
+                lines.append(f'{key} = {val}')
+            lines.append('')
 
         tmp_path = self.config_file + '.tmp'
         try:
@@ -371,7 +376,8 @@ class ConfigManager:
             self.logger.info("配置文件不存在，将生成默认配置文件")
             self._generate_default_config()
 
-        # ── 读取配置文件 ──
+        # 读取配置文件
+        self.config = configparser.ConfigParser(strict=False)
         for pass_num in range(3):
             try:
                 with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -422,7 +428,7 @@ class ConfigManager:
                 val = self.config.get(section, key, fallback='')
                 self._attrs[key] = val
 
-        # ── 临时文件夹特殊处理 ──
+        # 临时文件夹特殊处理
         if 'temp_folder' in self._path_keys or 'temp_folder' in self._attrs:
             temp_folder_config = self.config.get('Paths', 'temp_folder', fallback='Temp').strip()
             self._attrs['temp_folder'] = resolve_temp_folder(
@@ -430,7 +436,14 @@ class ConfigManager:
             )
             self._ensure_temp_folder_exists()
 
-        # ── 类型转换 ──
+        for key in self._path_keys:
+            if key == 'temp_folder' or key not in self._attrs:
+                continue
+            self._attrs[key] = resolve_temp_folder(
+                self._attrs[key].strip(), self.app_name, _get_program_dir(), self.logger
+            )
+
+        # 类型转换
         for key in self._int_keys:
             if key in self._attrs:
                 try:

@@ -73,7 +73,7 @@ def apply_migrations(config: configparser.ConfigParser,
     Returns:
         bool: 是否执行了迁移（调用方据此触发文件重建）
     """
-    applied = _get_applied_migrations(config)
+    applied = _get_applied_migrations(config, logger)
     changed = False
 
     for migration in MIGRATIONS:
@@ -98,10 +98,21 @@ def apply_migrations(config: configparser.ConfigParser,
     return changed
 
 
-def _get_applied_migrations(config: configparser.ConfigParser) -> set:
-    if config.has_section(MIGRATION_MARKER):
-        return {int(k) for k, v in config.items(MIGRATION_MARKER) if v == 'done'}
-    return set()
+def _get_applied_migrations(config: configparser.ConfigParser,
+                            logger: logging.Logger) -> set:
+    """读取已应用迁移 ID，跳过损坏的迁移标记。"""
+    applied = set()
+    if not config.has_section(MIGRATION_MARKER):
+        return applied
+
+    for key, value in config.items(MIGRATION_MARKER):
+        if value != 'done':
+            continue
+        try:
+            applied.add(int(key))
+        except ValueError:
+            logger.warning(f"忽略非法迁移标记: {key} = {value}")
+    return applied
 
 
 def _mark_applied(config: configparser.ConfigParser, migration_id: int) -> None:
