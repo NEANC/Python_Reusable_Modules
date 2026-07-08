@@ -5,6 +5,10 @@
 *.py text eol=lf
 *.pyw text eol=lf
 
+# Cpp files
+*.cpp text eol=lf
+*.h text eol=lf
+
 # Config / data files
 *.ini text eol=lf
 *.cfg text eol=lf
@@ -16,8 +20,8 @@
 
 # Script files
 *.sh text eol=lf
-*.bat text eol=lf
-*.ps1 text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
 
 # Spec file (PyInstaller)
 *.spec text eol=lf

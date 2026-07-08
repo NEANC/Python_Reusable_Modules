@@ -179,3 +179,17 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# 添加过滤规则
+*.zip
+*.exe
+*.log
+*.txt
+/*.yaml
+/*.yml
+gpt*.md
+ds*.md
+logs/
+log/
+/.trae/
+docs/superpowers/
