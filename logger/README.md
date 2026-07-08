@@ -2,14 +2,16 @@
 
 基于 M9A_Update_Assistant 与 ALAS_Logs_Archive 项目实践的 Python 日志管理模块，提供：
 
-- **控制台彩色输出 + 文件日志 + 旧日志自动清理**。
+- **控制台彩色输出 + 文件日志 + 旧日志自动清理 + 配置预读取**。
 
 ## 特性
 
 - **控制台彩色**：基于 colorama，DEBUG 青色 / INFO 白色 / WARNING 黄色 / ERROR 红色 / CRITICAL 红底黑字
-- **文件日志**：自动创建日志目录，按时间戳命名
-- **旧日志清理**：超出数量上限的旧日志自动删除（按修改时间保留最新的）
-- **零侵入**：不依赖项目内部模块，修改两个模块级常量即可适配
+- **默认不保存文件日志**：只调用 `setup_logger()` 时仅输出控制台日志，需要保存时再调用 `add_file_logger()`
+- **文件日志**：自动创建日志目录，按秒级时间戳命名
+- **旧日志清理**：默认最多保留 15 个、最多保留 7 天，按修改时间保留最新日志
+- **配置预读取**：在完整配置加载前读取 `save_enabled`，缺失或解析失败时默认不保存
+- **低侵入**：不依赖项目内部模块，仅额外依赖 colorama，修改两个模块级常量即可适配
 
 ## 依赖
 
@@ -73,7 +75,7 @@ cleanup_old_logs(logger, max_files=10, log_dir="my_logs", log_prefix="MyApp")
 
 ### `add_file_logger(logger, version="", log_dir=None, log_prefix=None) → logging.FileHandler`
 
-添加文件日志处理器。文件格式：`{LOG_DIR}/{LOG_PREFIX}_{YYYYMMDD_HHMMSS}.log`
+添加文件日志处理器。重复传入同一个 `logger`、`log_dir` 和 `log_prefix` 时会复用已有文件 handler，避免日志重复写入。文件格式：`{LOG_DIR}/{LOG_PREFIX}_{YYYYMMDD_HHMMSS}.log`
 
 | 参数         | 类型             | 说明                                    |
 | ------------ | ---------------- | --------------------------------------- |
@@ -82,20 +84,21 @@ cleanup_old_logs(logger, max_files=10, log_dir="my_logs", log_prefix="MyApp")
 | `log_dir`    | `str`            | 日志文件夹（默认取模块级 `LOG_DIR`）    |
 | `log_prefix` | `str`            | 文件名前缀（默认取模块级 `LOG_PREFIX`） |
 
-### `cleanup_old_logs(logger, max_files, log_dir=None, log_prefix=None)`
+### `cleanup_old_logs(logger, max_files=15, max_days=7, log_dir=None, log_prefix=None)`
 
-清理超出数量限制的旧日志文件。
+按文件名前缀清理旧日志。默认删除超过 7 天的日志，并在剩余文件中最多保留 15 个最新日志；`max_files=0` 表示不按数量保留任何匹配日志，`max_days=0` 表示按日期清理时不保留任何匹配日志，负数会抛出 `ValueError`。
 
 | 参数         | 类型             | 说明                                    |
 | ------------ | ---------------- | --------------------------------------- |
 | `logger`     | `logging.Logger` | 日志记录器                              |
-| `max_files`  | `int`            | 最大保留数量                            |
+| `max_files`  | `int`            | 最大保留数量，默认 15                   |
+| `max_days`   | `int`            | 最大保留天数，默认 7                    |
 | `log_dir`    | `str`            | 日志文件夹（默认取模块级 `LOG_DIR`）    |
 | `log_prefix` | `str`            | 文件名前缀（默认取模块级 `LOG_PREFIX`） |
 
 ### `raw_read_save_enabled(config_file, section='Logs', key='save_enabled') → bool`
 
-在完整加载配置前，快速读取配置文件判断是否启用日志保存。
+在完整加载配置前，快速读取配置文件判断是否启用日志保存。配置文件缺失、键缺失或解析失败时默认返回 `False`，即默认不保存文件日志。
 
 | 参数          | 类型  | 说明                            |
 | ------------- | ----- | ------------------------------- |

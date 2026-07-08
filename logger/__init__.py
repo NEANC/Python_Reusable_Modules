@@ -16,7 +16,7 @@
 
     logger = setup_logger("MyApp")
     add_file_logger(logger, version="v1.0.0")
-    cleanup_old_logs(logger, max_files=5)
+    cleanup_old_logs(logger, max_files=5, max_days=7)
 """
 
 from .logger_manager import (
