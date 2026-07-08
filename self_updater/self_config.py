@@ -31,18 +31,35 @@ class UpdateState:
     _DEFAULTS = {
         "State": {
             "state": "idle", "last_error": "",
-            "current_step": "", "message": "", "progress": "", "updated_at": "",
+            "current_step": "", "message": "", "progress": "", "level": "",
+            "updated_at": "",
         },
         "Files": {"target": "", "new_file": "", "backup_file": ""},
         "Version": {"old_version": "", "new_version": "", "old_sha256": "", "new_sha256": ""},
         "Retry": {"retry_count": "0", "max_retry": "3"},
     }
 
-    def __init__(self):
-        """初始化状态对象，设置默认值"""
+    def __init__(self, base_dir: Optional[str | Path] = None,
+                 file_path: Optional[str | Path] = None):
+        """初始化状态对象，设置默认值。
+
+        Args:
+            base_dir: 状态文件所在目录，未传时使用当前入口文件所在目录。
+            file_path: 状态文件完整路径，优先级高于 base_dir。
+        """
         self._config = configparser.ConfigParser(strict=False)
         self._ensure_defaults()
-        self._file_path = Path(sys.argv[0]).resolve().with_name(self.STATE_FILE_NAME)
+        self._file_path = self._resolve_file_path(base_dir, file_path)
+
+    @classmethod
+    def _resolve_file_path(cls, base_dir: Optional[str | Path] = None,
+                           file_path: Optional[str | Path] = None) -> Path:
+        """解析状态文件路径。"""
+        if file_path:
+            return Path(file_path).resolve()
+        if base_dir:
+            return Path(base_dir).resolve() / cls.STATE_FILE_NAME
+        return Path(sys.argv[0]).resolve().with_name(cls.STATE_FILE_NAME)
 
     def _ensure_defaults(self) -> None:
         """确保所有节和键存在"""
@@ -54,20 +71,25 @@ class UpdateState:
                     self._config.set(section, key, val)
 
     @classmethod
-    def load(cls) -> Optional["UpdateState"]:
+    def load(cls, base_dir: Optional[str | Path] = None,
+             file_path: Optional[str | Path] = None) -> Optional["UpdateState"]:
         """
         从 update_state.ini 加载状态
+
+        Args:
+            base_dir: 状态文件所在目录，未传时使用当前入口文件所在目录。
+            file_path: 状态文件完整路径，优先级高于 base_dir。
 
         Returns:
             UpdateState 实例，若文件不存在或损坏则返回 None
         """
-        file_path = Path(sys.argv[0]).resolve().with_name(cls.STATE_FILE_NAME)
-        if not file_path.exists():
+        resolved_path = cls._resolve_file_path(base_dir, file_path)
+        if not resolved_path.exists():
             return None
 
-        state = cls()
+        state = cls(file_path=resolved_path)
         try:
-            content = file_path.read_text(encoding='utf-8')
+            content = resolved_path.read_text(encoding='utf-8')
             # PowerShell 5.1 的 Set-Content -Encoding UTF8 会写入 BOM，须剔除
             if content.startswith('\ufeff'):
                 content = content[1:]

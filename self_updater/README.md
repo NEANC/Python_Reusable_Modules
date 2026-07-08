@@ -127,7 +127,7 @@ if args.retry_update:
     if need_exit:
         sys.exit(0)
     logger.error("重试更新失败，无法获取新版本")
-    return  # 或 sys.exit(1)
+    sys.exit(1)
 
 # ── 更新失败模式（PS1 回滚耗尽后触发） ──
 if args.update_failed:
@@ -199,6 +199,8 @@ SelfUpdater._cleanup_update_residue(logger)
 ### `SelfUpdater.self_update_verify(...) -> int`
 
 新版程序启动后的健康检查（通常由 `--self-update-verify` 参数触发）。
+
+默认校验 SHA256。未传 version_func 时仅校验 SHA256；如需校验应用内部版本号，调用方需要传入 `version_func`。
 
 返回值：`0` 通过，`1` 缺少 SHA256，`2` SHA256 不匹配，`3` 版本号不匹配。
 
@@ -275,7 +277,7 @@ Helper.ps1:
 ├── 替换后 SHA256 校验
 ├── 启动新版程序 --self-update-verify
 │   ├── SHA256 自检
-│   └── 版本号自检
+│   └── 版本号自检（需调用方传入 version_func）
 ├── 验证通过 → 提交 (Commit-Update) → 启动新版
 └── 验证失败 → 回滚 (Restore-Backup) → 重试 / 禁用
 ```

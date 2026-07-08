@@ -39,9 +39,9 @@ from .self_utils import (
 )
 
 
-def _get_existing_retry_count() -> str:
+def _get_existing_retry_count(base_dir: Optional[Path] = None) -> str:
     """读取已存在的 update_state.ini 中的 retry_count，若无则返回 '0'"""
-    existing = UpdateState.load()
+    existing = UpdateState.load(base_dir=base_dir)
     if existing:
         return existing.get("Retry", "retry_count", fallback="0")
     return "0"
@@ -142,12 +142,10 @@ class SelfUpdater:
                 api_url = f"https://api.github.com/repos/{self.github_repo}/releases"
                 response = requests.get(api_url, headers=headers, proxies=proxies, timeout=30)
                 response.raise_for_status()
-                releases = response.json()
-                releases = [r for r in releases if not r.get('draft')]
-                if not releases:
+                release_info = self._select_preview_release(response.json())
+                if not release_info:
                     self.logger.error("未找到任何有效的 release")
                     return None
-                release_info = releases[0]
             else:
                 api_url = f"https://api.github.com/repos/{self.github_repo}/releases/latest"
                 response = requests.get(api_url, headers=headers, proxies=proxies, timeout=30)
@@ -162,6 +160,17 @@ class SelfUpdater:
         except Exception as e:
             self.logger.critical(f"获取 GitHub release 时出错: {e}")
             return None
+
+    def _select_preview_release(self, releases: List[Dict]) -> Optional[Dict]:
+        """从 preview release 列表中选择语义版本最高的可用版本。"""
+        selected = None
+        for release in releases:
+            tag_name = release.get('tag_name', '')
+            if release.get('draft') or is_build_tag(tag_name) or not version_to_tuple(tag_name):
+                continue
+            if selected is None or version_newer_than(selected.get('tag_name', ''), tag_name):
+                selected = release
+        return selected
 
     def _get_asset_sha256(self, release_info: Dict, asset_name: str) -> str:
         """从 release 的 assets 和 body 中提取指定文件的 SHA256"""
@@ -446,7 +455,7 @@ class SelfUpdater:
         shutil.copy2(tmp_path, new_exe)
         self.logger.info(f"新版本已暂存: {new_exe}")
 
-        state = UpdateState()
+        state = UpdateState(base_dir=base_dir)
         state["state"] = "downloaded_verified"
         state["target"] = str(current_exe)
         state["new_file"] = str(new_exe)
@@ -455,7 +464,7 @@ class SelfUpdater:
         state["new_version"] = new_version
         state["old_sha256"] = old_sha256
         state["new_sha256"] = new_sha256
-        state.set("Retry", "retry_count", _get_existing_retry_count())
+        state.set("Retry", "retry_count", _get_existing_retry_count(base_dir))
         state.set("Retry", "max_retry", "3")
         state.save()
 
@@ -486,16 +495,20 @@ class SelfUpdater:
             if lock_file.exists():
                 return
             if proc.poll() is not None:
-                raise RuntimeError(
-                    f"启动更新脚本失败：helper.ps1 异常退出，退出码 {proc.returncode}"
-                )
+                message = f"启动更新脚本失败：helper.ps1 异常退出，退出码 {proc.returncode}"
+                state["last_error"] = message
+                state.save()
+                raise RuntimeError(message)
             time.sleep(0.1)
 
         try:
             proc.kill()
         except Exception:
             pass
-        raise RuntimeError("启动更新脚本失败：helper.ps1 未在 15 秒内就绪")
+        message = "启动更新脚本失败：helper.ps1 未在 15 秒内就绪"
+        state["last_error"] = message
+        state.save()
+        raise RuntimeError(message)
 
     # ── PS1 脚本生成（从 modules/self_updater.py 完整复用） ──
 
@@ -618,7 +631,7 @@ class SelfUpdater:
             function Set-UpdateStatus($state, $step, $message, $progress, $level) {
                 $message = Normalize-IniValue $message
                 if ($state) { Write-IniValue "State" "state" $state }
-                if ($step) { Write-IniValue "State" "step" $step }
+                if ($step) { Write-IniValue "State" "current_step" $step }
                 if ($null -ne $progress) { Write-IniValue "State" "progress" "$progress" }
                 if ($level) { Write-IniValue "State" "level" $level }
                 Write-IniValue "State" "message" $message
@@ -957,7 +970,7 @@ class SelfUpdater:
             function Set-UpdateStatus($state, $step, $message, $progress, $level) {
                 $message = Normalize-IniValue $message
                 if ($state) { Write-IniValue "State" "state" $state }
-                if ($step) { Write-IniValue "State" "step" $step }
+                if ($step) { Write-IniValue "State" "current_step" $step }
                 if ($null -ne $progress) { Write-IniValue "State" "progress" "$progress" }
                 if ($level) { Write-IniValue "State" "level" $level }
                 Write-IniValue "State" "message" $message
