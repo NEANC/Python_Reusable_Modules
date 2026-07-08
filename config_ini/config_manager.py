@@ -60,6 +60,30 @@ def resolve_temp_folder(temp_folder_config: str, app_name: str = '',
     return temp_folder_config
 
 
+# ── 内置默认配置（用户可通过 __init__ 参数覆盖） ──
+_DEFAULT_SECTIONS: Dict[str, Dict[str, str]] = {
+    'Paths': {
+        'install_folder': r'C:\MyApp',
+        'temp_folder': 'Temp',
+    },
+    'Network': {
+        'proxy': '',
+    },
+    'Update': {
+        'enabled': 'true',
+        'channel': 'stable',
+    },
+}
+
+_DEFAULT_COMMENTS: Dict[str, str] = {
+    'Paths.install_folder': '安装目录',
+    'Paths.temp_folder': '临时文件夹（Temp 表示程序目录下的 Temp，留空使用系统 TEMP）',
+    'Network.proxy': 'HTTP/HTTPS 代理地址（例如 http://127.0.0.1:7890）',
+    'Update.enabled': '是否启用自动更新',
+    'Update.channel': '更新通道：preview（含预发布）/ stable（仅正式版）',
+}
+
+
 class ConfigManager:
     """配置管理器，负责配置初始化、加载、验证"""
 
@@ -84,8 +108,23 @@ class ConfigManager:
         self.logger = logger
         self.config = configparser.ConfigParser(strict=False)
 
-        self.default_sections = default_sections or {}
-        self.comments = comments or {}
+        # 合并：先内置默认，再用户值覆盖
+        merged_sections: Dict[str, Dict[str, str]] = {}
+        for section, keys in _DEFAULT_SECTIONS.items():
+            merged_sections[section] = dict(keys)
+        if default_sections:
+            for section, keys in default_sections.items():
+                if section in merged_sections:
+                    merged_sections[section].update(keys)
+                else:
+                    merged_sections[section] = dict(keys)
+        self.default_sections = merged_sections
+
+        merged_comments: Dict[str, str] = {}
+        merged_comments.update(_DEFAULT_COMMENTS)
+        if comments:
+            merged_comments.update(comments)
+        self.comments = merged_comments
         self.app_name = app_name
         self._first_run_callback = first_run_callback
 
