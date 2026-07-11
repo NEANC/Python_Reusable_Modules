@@ -212,20 +212,41 @@ class ConfigIniReviewFixesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.ini"
             original_text = (
-                "[Paths\n"
+                "temp_folder = Temp\n"
+                "[Paths]\n"
                 "install_folder = C:\\CustomApp\n"
+                "= still broken\n"
                 "[Update]\n"
                 "channel = preview\n"
             )
             config_path.write_text(original_text, encoding="utf-8")
             manager = self.make_manager(config_path)
-            with patch.object(manager, "_sanitize_config_file", lambda: None):
+            original_read_file = configparser.ConfigParser.read_file
+            read_calls = []
+
+            def fail_after_real_sanitize(parser, file_obj, source=None):
+                """第一次使用真实解析失败，第二次模拟仍无法解析。"""
+                read_calls.append(config_path.read_text(encoding="utf-8"))
+                if len(read_calls) == 1:
+                    return original_read_file(parser, file_obj, source)
+                if len(read_calls) == 2:
+                    self.assertIn("# [已修复] temp_folder = Temp", read_calls[-1])
+                    raise configparser.ParsingError(source or str(config_path))
+                return original_read_file(parser, file_obj, source)
+
+            with patch.object(
+                    configparser.ConfigParser,
+                    "read_file",
+                    fail_after_real_sanitize):
                 manager.load()
 
             backup_paths = sorted(config_path.parent.glob("config.ini.bak*"))
             self.assertEqual(1, len(backup_paths))
             self.assertEqual(original_text, backup_paths[0].read_text(encoding="utf-8"))
-            self.assertNotEqual(original_text, config_path.read_text(encoding="utf-8"))
+            current_text = config_path.read_text(encoding="utf-8")
+            self.assertNotEqual(original_text, current_text)
+            self.assertIn("[Paths]", current_text)
+            self.assertIn("[Update]", current_text)
 
 
 if __name__ == "__main__":
