@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from self_updater import ps1_fragments
 from self_updater.self_config import UpdateState
 from self_updater.self_updater import SelfUpdater
 
@@ -75,6 +76,13 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("certutil.exe -hashfile", content, script_name)
         self.assertIn("^[0-9A-Fa-f]{64}$", content, script_name)
         self.assertIn('throw "Get-SHA256 failed:', content, script_name)
+
+    def test_sha256_fragment_contains_fallbacks(self):
+        """SHA256 片段应包含三层 fallback。"""
+        content = ps1_fragments.generate_sha256_function_ps1()
+
+        self._assert_sha256_fallbacks(content, "SHA256 fragment")
+        self.assertEqual(1, content.count("function Get-SHA256($filePath)"))
 
     def test_fetch_current_release_sha256_requires_exact_package_type(self):
         """当前版本完整性校验不应降级匹配其他打包方式。"""
