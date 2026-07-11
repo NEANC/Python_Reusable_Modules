@@ -160,6 +160,34 @@ class ConfigIniReviewFixesTest(unittest.TestCase):
             self.assertIn("[__migrations__]", text)
             self.assertIn("7 = done", text)
 
+    def test_load_sanitizes_key_value_before_first_section(self):
+        """节外键值行不应导致合法配置被重建为默认配置。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.ini"
+            first_run_calls = []
+            config_path.write_text(
+                "temp_folder = Temp\n"
+                "[Paths]\n"
+                "install_folder = C:\\CustomApp\n"
+                "[Update]\n"
+                "channel = preview\n",
+                encoding="utf-8",
+            )
+            manager = ConfigManager(
+                config_file=str(config_path),
+                logger=self.logger,
+                default_sections=DEFAULT_SECTIONS,
+                comments=COMMENTS,
+                app_name="TestApp",
+                first_run_callback=lambda: first_run_calls.append("called"),
+            )
+
+            manager.load()
+
+            self.assertEqual([], first_run_calls)
+            self.assertEqual(r"C:\CustomApp", manager.get_attr("install_folder"))
+            self.assertEqual("preview", manager.get_attr("channel"))
+
     def test_registered_path_keys_are_resolved(self):
         """register_path_key 应对注册的路径键生效。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -179,6 +207,46 @@ class ConfigIniReviewFixesTest(unittest.TestCase):
 
             self.assertTrue(Path(manager.get_attr("install_folder")).is_absolute())
             self.assertTrue(manager.get_attr("install_folder").endswith("Temp"))
+    def test_load_backs_up_original_config_before_regenerating_default(self):
+        """修复后仍无法解析时，重建默认配置前应保留原始内容备份。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.ini"
+            original_text = (
+                "temp_folder = Temp\n"
+                "[Paths]\n"
+                "install_folder = C:\\CustomApp\n"
+                "= still broken\n"
+                "[Update]\n"
+                "channel = preview\n"
+            )
+            config_path.write_text(original_text, encoding="utf-8")
+            manager = self.make_manager(config_path)
+            original_read_file = configparser.ConfigParser.read_file
+            read_calls = []
+
+            def fail_after_real_sanitize(parser, file_obj, source=None):
+                """第一次使用真实解析失败，第二次模拟仍无法解析。"""
+                read_calls.append(config_path.read_text(encoding="utf-8"))
+                if len(read_calls) == 1:
+                    return original_read_file(parser, file_obj, source)
+                if len(read_calls) == 2:
+                    self.assertIn("# [已修复] temp_folder = Temp", read_calls[-1])
+                    raise configparser.ParsingError(source or str(config_path))
+                return original_read_file(parser, file_obj, source)
+
+            with patch.object(
+                    configparser.ConfigParser,
+                    "read_file",
+                    fail_after_real_sanitize):
+                manager.load()
+
+            backup_paths = sorted(config_path.parent.glob("config.ini.bak*"))
+            self.assertEqual(1, len(backup_paths))
+            self.assertEqual(original_text, backup_paths[0].read_text(encoding="utf-8"))
+            current_text = config_path.read_text(encoding="utf-8")
+            self.assertNotEqual(original_text, current_text)
+            self.assertIn("[Paths]", current_text)
+            self.assertIn("[Update]", current_text)
 
 
 if __name__ == "__main__":

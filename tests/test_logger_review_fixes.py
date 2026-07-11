@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from logger import add_file_logger
 from logger import cleanup_old_logs
@@ -22,7 +23,14 @@ class LoggerReviewFixesTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         """清理测试中创建的 logger handler。"""
-        for name in ["test_console_dedupe", "test_file_dedupe", "test_cleanup"]:
+        for name in [
+            "test_console_dedupe",
+            "test_file_dedupe",
+            "test_cleanup",
+            "test_file_collision_a",
+            "test_file_collision_b",
+            "test_cleanup_keeps_active_file",
+        ]:
             logger = logging.getLogger(name)
             for handler in list(logger.handlers):
                 logger.removeHandler(handler)
@@ -98,6 +106,47 @@ class LoggerReviewFixesTest(unittest.TestCase):
                 logger.removeHandler(first_handler)
                 first_handler.close()
 
+    def test_add_file_logger_avoids_same_second_path_collision(self) -> None:
+        """不同 logger 同秒同前缀写文件时应避让路径冲突。"""
+        first_logger = setup_logger("test_file_collision_a")
+        second_logger = setup_logger("test_file_collision_b")
+        fixed_now = "20260711_120000"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("logger.logger_manager.datetime") as mock_datetime:
+                mock_datetime.now.return_value.strftime.return_value = fixed_now
+                first_handler = add_file_logger(
+                    first_logger,
+                    log_dir=temp_dir,
+                    log_prefix="App",
+                )
+                second_handler = add_file_logger(
+                    second_logger,
+                    log_dir=temp_dir,
+                    log_prefix="App",
+                )
+                repeat_handler = add_file_logger(
+                    first_logger,
+                    log_dir=temp_dir,
+                    log_prefix="App",
+                )
+
+            try:
+                first_path = Path(first_handler.baseFilename)
+                second_path = Path(second_handler.baseFilename)
+
+                self.assertIs(first_handler, repeat_handler)
+                self.assertNotEqual(first_path, second_path)
+                self.assertEqual("App_20260711_120000.log", first_path.name)
+                self.assertEqual("App_20260711_120000_1.log", second_path.name)
+            finally:
+                for logger, handler in [
+                    (first_logger, first_handler),
+                    (second_logger, second_handler),
+                ]:
+                    logger.removeHandler(handler)
+                    handler.close()
+
     def test_raw_read_save_enabled_defaults_to_false(self) -> None:
         """缺失或异常配置默认不保存日志。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -154,6 +203,71 @@ class LoggerReviewFixesTest(unittest.TestCase):
 
             self.assertFalse(new_log.exists())
             self.assertTrue(other_log.exists())
+
+    def test_cleanup_old_logs_keeps_active_file_handler_path(self) -> None:
+        """日志清理不应删除当前进程正在写入的日志文件。"""
+        logger = setup_logger("test_cleanup_keeps_active_file")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_handler = add_file_logger(
+                logger,
+                log_dir=temp_dir,
+                log_prefix="App",
+            )
+            active_log = Path(file_handler.baseFilename)
+            records = []
+            capture_handler = logging.Handler()
+            capture_handler.emit = records.append
+            logger.addHandler(capture_handler)
+
+            try:
+                cleanup_old_logs(
+                    logger,
+                    max_files=0,
+                    max_days=7,
+                    log_dir=temp_dir,
+                    log_prefix="App",
+                )
+
+                self.assertTrue(active_log.exists())
+                self.assertFalse(
+                    any(
+                        "删除日志文件" in record.getMessage()
+                        for record in records
+                    )
+                )
+            finally:
+                logger.removeHandler(capture_handler)
+                logger.removeHandler(file_handler)
+                capture_handler.close()
+                file_handler.close()
+
+    def test_cleanup_old_logs_treats_glob_chars_as_literal_prefix(self) -> None:
+        """日志清理应按字面量前缀过滤，不扩大 glob 匹配范围。"""
+        logger = setup_logger("test_cleanup")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_dir = Path(temp_dir)
+            literal_log = log_dir / "App[1]_old.log"
+            glob_matched_log = log_dir / "App1_old.log"
+            unrelated_log = log_dir / "Other_old.log"
+
+            for path in [literal_log, glob_matched_log, unrelated_log]:
+                path.write_text("log", encoding="utf-8")
+
+            old_time = time.time() - 9 * 24 * 60 * 60
+            for path in [literal_log, glob_matched_log, unrelated_log]:
+                os.utime(path, (old_time, old_time))
+
+            cleanup_old_logs(
+                logger,
+                max_files=15,
+                max_days=7,
+                log_dir=str(log_dir),
+                log_prefix="App[1]",
+            )
+
+            self.assertFalse(literal_log.exists())
+            self.assertTrue(glob_matched_log.exists())
+            self.assertTrue(unrelated_log.exists())
 
 
 if __name__ == "__main__":

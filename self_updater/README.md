@@ -46,6 +46,7 @@ self_updater/
 
 ```python
 import logging
+import sys
 from self_updater import SelfUpdater, detect_package_type
 
 # 1. 检测运行环境
@@ -56,16 +57,17 @@ logger = logging.getLogger("MyApp")
 updater = SelfUpdater(
     github_repo="you/your-repo",                                       # GitHub 仓库
     asset_pattern=r'^MyApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',     # exe 文件名正则
-    app_name="MyApp",                                                  # 应用名称
+    app_name="MyApp",                                                  # 安全应用标识
     current_version="v1.0.0",                                          # 当前版本号
     proxy="",                                                          # HTTP 代理（留空则不使用）
     temp_folder="/tmp/MyApp",                                          # 可选：临时目录（不传则自动解析）
     logger=logger,
-    download_func=your_download_with_progress,                         # 可选：注入带进度条的下载函数
     self_update_channel="preview",                                     # 'preview' 或 'stable'
     is_bundled=is_bundled,                                             # 可选：预检测结果
     package_type=package_type,                                         # 可选：打包方式
 )
+
+# 如需自定义进度条，可传入 download_func=(url, save_path) -> bool。
 
 # 3. 检查并准备更新
 need_exit = updater.check_self_update()       # 普通升级（仅当远端更新时升级）
@@ -179,7 +181,7 @@ SelfUpdater._cleanup_update_residue(logger)
 | --------------------- | -------------------- | ---- | ------------------------------------------------------- |
 | `github_repo`         | `str`                | 是   | GitHub 仓库，格式 `"owner/repo"`                        |
 | `asset_pattern`       | `str`                | 是   | exe asset 文件名正则，编译为 `re.compile()`             |
-| `app_name`            | `str`                | 是   | 应用名称，影响 PS1 脚本名和缓存目录名                   |
+| `app_name`            | `str`                | 是   | 安全应用标识，用于 PS1 脚本名、缓存目录名和 User-Agent |
 | `current_version`     | `str`                | 是   | 当前版本号（如 `"v1.0.0"`）                             |
 | `proxy`               | `str`                | 是   | HTTP/HTTPS 代理地址，留空 `""` 则不使用                 |
 | `temp_folder`         | `str`                | 否   | 临时文件存储目录；不传则自动解析（系统缓存 > 脚本目录） |
@@ -306,7 +308,8 @@ Helper.ps1:
 ## 注意事项
 
 1. **仅支持 Windows**：PS1 脚本依赖 PowerShell 5.1 或更高版本。
-2. **Asset 命名规范**：exe asset 文件名必须匹配给定的正则，且包含 `Nuitka` 或 `PyInstaller` 关键字。
-3. **Release 要求**：Release 需提供对应 exe 的 SHA256；优先读取 asset `digest` 中的 `sha256:...`，否则从 release body 中匹配包含文件名的 64 位 SHA256。
-4. **缓存机制**：下载的 exe 缓存到 `{temp_folder}/UpdateCache/installs/{version}/`，下次启动直接复用。
-5. **失败禁用**：同一版本连续失败 3 次后标记为 `failed_disabled`，后续自动跳过该版本。
+2. **`app_name` 安全约束**：`app_name` 是安全应用标识，用于 PS1 脚本名、缓存目录和 User-Agent。仅允许 `A-Za-z0-9_.-`，且拒绝空字符串、路径分隔符、PowerShell/文件名危险字符、纯点号/首尾点号、Windows 保留设备名及其带扩展名形式（如 `CON`、`CON.txt`）。建议使用 `MyApp`、`my-app` 这类稳定标识，不要使用产品显示名。
+3. **Asset 命名规范**：exe asset 文件名必须匹配给定的正则，且包含 `Nuitka` 或 `PyInstaller` 关键字。
+4. **Release 要求**：Release 需提供对应 exe 的 SHA256；优先读取 asset `digest` 中的 `sha256:...`，否则从 release body 中匹配包含文件名的 64 位 SHA256。
+5. **缓存机制**：下载的 exe 缓存到 `{temp_folder}/UpdateCache/installs/{version}/`，下次启动直接复用。
+6. **失败禁用**：同一版本连续失败 3 次后标记为 `failed_disabled`，后续自动跳过该版本。

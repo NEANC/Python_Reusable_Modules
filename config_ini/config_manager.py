@@ -173,6 +173,27 @@ class ConfigManager:
         else:
             sys.exit(0)
 
+    def _backup_config_file(self, content: Optional[bytes] = None) -> None:
+        """备份当前配置文件，避免重建默认配置时覆盖用户原始内容。"""
+        if content is None and not os.path.exists(self.config_file):
+            return
+
+        backup_path = self.config_file + '.bak'
+        index = 1
+        while os.path.exists(backup_path):
+            backup_path = f'{self.config_file}.bak.{index}'
+            index += 1
+
+        try:
+            if content is None:
+                with open(self.config_file, 'rb') as source:
+                    content = source.read()
+            with open(backup_path, 'wb') as target:
+                target.write(content)
+            self.logger.info(f"已备份损坏配置文件: {backup_path}")
+        except OSError as e:
+            self.logger.error(f"备份配置文件失败: {e}")
+
     def _regenerate_config_file(self) -> None:
         """
         重建配置文件，保留所有已有值，仅补充缺失的模板键。
@@ -232,7 +253,7 @@ class ConfigManager:
                 pass
 
     def _sanitize_config_file(self) -> None:
-        """逐行清理损坏行：空键值行删除，无 = 行注释掉"""
+        """逐行清理损坏行：空键值行删除，无 = 行注释掉，节外键值行注释掉"""
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -240,6 +261,7 @@ class ConfigManager:
             return
 
         fixed = False
+        in_section = False
         new_lines = []
         for line in lines:
             stripped = line.strip()
@@ -247,6 +269,7 @@ class ConfigManager:
                 new_lines.append(line)
                 continue
             if re.match(r'^\[.+\]$', stripped):
+                in_section = True
                 new_lines.append(line)
                 continue
             if '=' not in stripped:
@@ -255,6 +278,10 @@ class ConfigManager:
                 continue
             key, sep, val = stripped.partition('=')
             if not key.strip():
+                fixed = True
+                continue
+            if not in_section:
+                new_lines.append(f'# [已修复] {line}')
                 fixed = True
                 continue
             new_lines.append(line)
@@ -378,6 +405,7 @@ class ConfigManager:
 
         # 读取配置文件
         self.config = configparser.ConfigParser(strict=False)
+        original_content = None
         for pass_num in range(3):
             try:
                 with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -386,9 +414,15 @@ class ConfigManager:
             except configparser.Error as e:
                 if pass_num == 0:
                     self.logger.warning(f"配置文件解析错误，正在尝试修复: {e}")
+                    try:
+                        with open(self.config_file, 'rb') as source:
+                            original_content = source.read()
+                    except OSError as read_error:
+                        self.logger.error(f"读取原始配置文件失败: {read_error}")
                     self._sanitize_config_file()
                 elif pass_num == 1:
                     self.logger.critical("修复失败，将重新生成配置文件")
+                    self._backup_config_file(original_content)
                     self._generate_default_config()
                 else:
                     self.logger.critical(f"配置文件无法修复: {e}")
