@@ -50,18 +50,67 @@ class FakeExitedProcess:
 class SelfUpdaterReviewFixesTest(unittest.TestCase):
     """覆盖代码审查反馈中的关键修复项。"""
 
-    def make_updater(self, current_version="v1.0.0"):
+    def make_updater(self, current_version="v1.0.0", app_name="App"):
         """创建测试用 SelfUpdater 实例。"""
         return SelfUpdater(
             github_repo="owner/repo",
-            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\\d.]+.*\\.exe$",
-            app_name="App",
+            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+            app_name=app_name,
             current_version=current_version,
             proxy="",
             logger=logging.getLogger("SelfUpdaterTest"),
             is_bundled=True,
             package_type="Nuitka",
         )
+
+    def test_fetch_current_release_sha256_requires_exact_package_type(self):
+        """当前版本完整性校验不应降级匹配其他打包方式。"""
+        pyinstaller_sha256 = "a" * 64
+        release_info = {
+            "assets": [
+                {
+                    "name": "App-PyInstaller-v1.0.0.exe",
+                    "browser_download_url": "https://example.invalid/App-PyInstaller-v1.0.0.exe",
+                    "digest": f"sha256:{pyinstaller_sha256}",
+                },
+            ],
+        }
+        updater = self.make_updater()
+
+        with patch("self_updater.self_updater.requests.get", return_value=FakeResponse(release_info)):
+            actual = updater._fetch_current_release_sha256("Nuitka")
+
+        self.assertEqual("", actual)
+
+    def test_match_asset_keeps_fallback_for_download_flow(self):
+        """下载新版本流程仍允许降级匹配另一种打包方式。"""
+        release_info = {
+            "assets": [
+                {
+                    "name": "App-PyInstaller-v1.2.0.exe",
+                    "browser_download_url": "https://example.invalid/App-PyInstaller-v1.2.0.exe",
+                },
+            ],
+        }
+        updater = self.make_updater()
+
+        exe_url, exe_name = updater._match_asset(release_info, "Nuitka")
+
+        self.assertEqual("https://example.invalid/App-PyInstaller-v1.2.0.exe", exe_url)
+        self.assertEqual("App-PyInstaller-v1.2.0.exe", exe_name)
+
+    def test_app_name_rejects_unsafe_values(self):
+        """应用名称应拒绝空值、路径分隔符和脚本注入字符。"""
+        for app_name in ("", "Bad;Name", "Bad/Name"):
+            with self.subTest(app_name=app_name):
+                with self.assertRaises(ValueError):
+                    self.make_updater(app_name=app_name)
+
+    def test_app_name_accepts_safe_value(self):
+        """应用名称应允许字母、数字、下划线、点和连字符。"""
+        updater = self.make_updater(app_name="App_Name-1.0")
+
+        self.assertEqual("App_Name-1.0", updater.app_name)
 
     def test_update_state_uses_explicit_base_dir(self):
         """UpdateState 应支持显式目录，避免依赖 sys.argv[0]。"""

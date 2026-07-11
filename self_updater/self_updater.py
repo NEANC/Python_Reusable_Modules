@@ -50,6 +50,8 @@ def _get_existing_retry_count(base_dir: Optional[Path] = None) -> str:
 class SelfUpdater:
     """自更新器，负责自我更新检查、下载、替换、回滚"""
 
+    _APP_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
                  current_version: str, proxy: str,
                  logger: logging.Logger,
@@ -74,6 +76,7 @@ class SelfUpdater:
             is_bundled: 外部预检测的是否为打包程序（可选）
             package_type: 外部预检测的打包方式（可选）
         """
+        self._validate_app_name(app_name)
         self.github_repo = github_repo
         self.asset_regex = re.compile(asset_pattern)
         self.app_name = app_name
@@ -85,6 +88,14 @@ class SelfUpdater:
         self.self_update_channel = self_update_channel
         self._is_bundled = is_bundled
         self._package_type = package_type
+
+    @classmethod
+    def _validate_app_name(cls, app_name: str) -> None:
+        """校验应用名称只能包含安全的文件名字符。"""
+        if not app_name or not cls._APP_NAME_PATTERN.fullmatch(app_name):
+            raise ValueError(
+                "app_name 只能包含英文字母、数字、下划线、点和连字符"
+            )
 
     def _resolve_temp_folder(self, temp_folder: Optional[str]) -> str:
         """解析临时文件夹路径，若未指定则优先使用系统缓存目录，其次脚本目录"""
@@ -212,6 +223,19 @@ class SelfUpdater:
         self.logger.critical("未找到符合命名规范的 exe 文件")
         return '', ''
 
+    def _match_asset_exact(self, release_info: Dict,
+                           package_type: str) -> Tuple[str, str]:
+        """从 release assets 中精确匹配指定打包方式的 exe 文件。"""
+        assets = release_info.get('assets', [])
+        for asset in assets:
+            asset_name = asset.get('name', '')
+            if self.asset_regex.match(asset_name) and package_type in asset_name:
+                self.logger.info(f"找到 {package_type} 版本: {asset_name}")
+                return asset.get('browser_download_url', ''), asset_name
+
+        self.logger.warning(f"未找到 {package_type} 版本的当前 release exe 文件")
+        return '', ''
+
     def _fetch_current_release_sha256(self, package_type: str) -> str:
         """从 GitHub API 获取当前版本的 exe asset 的 SHA256"""
         try:
@@ -236,7 +260,7 @@ class SelfUpdater:
                 )
                 return ""
 
-            _, exe_name = self._match_asset(release_info, package_type)
+            _, exe_name = self._match_asset_exact(release_info, package_type)
             if not exe_name:
                 return ""
 
