@@ -63,6 +63,19 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             package_type="Nuitka",
         )
 
+    def _assert_sha256_fallbacks(self, content, script_name):
+        """断言生成脚本包含 SHA256 多路径回退。"""
+        self.assertIn("function Get-SHA256($filePath)", content, script_name)
+        self.assertIn("[System.IO.File]::OpenRead($filePath)", content, script_name)
+        self.assertIn("[System.Security.Cryptography.SHA256]::Create()", content, script_name)
+        self.assertIn("$sha256.Dispose()", content, script_name)
+        self.assertIn("$stream.Dispose()", content, script_name)
+        self.assertIn("Get-Command Get-FileHash -ErrorAction SilentlyContinue", content, script_name)
+        self.assertIn("Get-FileHash -Algorithm SHA256 -LiteralPath $filePath", content, script_name)
+        self.assertIn("certutil.exe -hashfile", content, script_name)
+        self.assertIn("^[0-9A-Fa-f]{64}$", content, script_name)
+        self.assertIn('throw "Get-SHA256 failed:', content, script_name)
+
     def test_fetch_current_release_sha256_requires_exact_package_type(self):
         """当前版本完整性校验不应降级匹配其他打包方式。"""
         pyinstaller_sha256 = "a" * 64
@@ -228,8 +241,8 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertNotIn('Write-IniValue "State" "step" $step', helper_text)
             self.assertNotIn('Write-IniValue "State" "step" $step', update_text)
 
-    def test_generated_ps1_uses_dotnet_sha256_instead_of_get_file_hash(self):
-        """生成的 PS1 不应依赖 Get-FileHash cmdlet。"""
+    def test_generated_ps1_has_sha256_fallbacks(self):
+        """生成的 PS1 应包含 SHA256 多路径 fallback。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             updater = self.make_updater()
             updater._generate_helper_ps1(Path(temp_dir))
@@ -239,13 +252,11 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             update_text = (Path(temp_dir) / "App_Update.ps1").read_text(encoding="utf-8-sig")
             combined_text = helper_text + update_text
 
-            self.assertNotIn("Get-FileHash", combined_text)
-            self.assertEqual(2, combined_text.count("function Get-SHA256"))
-            self.assertEqual(2, combined_text.count("[System.Security.Cryptography.SHA256]::Create()"))
+            self.assertEqual(2, combined_text.count("function Get-SHA256($filePath)"))
+            self._assert_sha256_fallbacks(helper_text, "Helper.ps1")
+            self._assert_sha256_fallbacks(update_text, "Update.ps1")
             self.assertIn("$actual = Get-SHA256 $target", helper_text)
             self.assertIn("$actual = Get-SHA256 $newFile", update_text)
-            self.assertGreaterEqual(combined_text.count("$sha256.Dispose()"), 2)
-            self.assertGreaterEqual(combined_text.count("$stream.Dispose()"), 2)
 
     def test_readme_documents_verify_version_func_requirement(self):
         """README 应说明未传 version_func 时只校验 SHA256。"""
