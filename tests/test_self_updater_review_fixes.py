@@ -146,6 +146,25 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertNotIn('Write-IniValue "State" "step" $step', helper_text)
             self.assertNotIn('Write-IniValue "State" "step" $step', update_text)
 
+    def test_generated_ps1_uses_dotnet_sha256_instead_of_get_file_hash(self):
+        """生成的 PS1 不应依赖 Get-FileHash cmdlet。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater = self.make_updater()
+            updater._generate_helper_ps1(Path(temp_dir))
+            updater._generate_update_ps1(Path(temp_dir))
+
+            helper_text = (Path(temp_dir) / "App_Update_Helper.ps1").read_text(encoding="utf-8-sig")
+            update_text = (Path(temp_dir) / "App_Update.ps1").read_text(encoding="utf-8-sig")
+            combined_text = helper_text + update_text
+
+            self.assertNotIn("Get-FileHash", combined_text)
+            self.assertEqual(2, combined_text.count("function Get-SHA256"))
+            self.assertEqual(2, combined_text.count("[System.Security.Cryptography.SHA256]::Create()"))
+            self.assertIn("$actual = Get-SHA256 $target", helper_text)
+            self.assertIn("$actual = Get-SHA256 $newFile", update_text)
+            self.assertGreaterEqual(combined_text.count("$sha256.Dispose()"), 2)
+            self.assertGreaterEqual(combined_text.count("$stream.Dispose()"), 2)
+
     def test_readme_documents_verify_version_func_requirement(self):
         """README 应说明未传 version_func 时只校验 SHA256。"""
         readme_path = Path(__file__).resolve().parents[1] / "self_updater" / "README.md"
