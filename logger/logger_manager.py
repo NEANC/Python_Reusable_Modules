@@ -78,6 +78,14 @@ def _is_file_path_in_use(log_file: Path) -> bool:
     return False
 
 
+def _get_active_file_handler_paths() -> set[Path]:
+    """获取当前进程中所有文件日志 handler 正在使用的路径。"""
+    return {
+        Path(handler.baseFilename).resolve()
+        for handler in _iter_all_file_handlers()
+    }
+
+
 def _make_available_log_file(log_dir: Path, prefix: str, timestamp: str) -> Path:
     """生成保持秒级主时间戳的可用日志文件路径。"""
     index = 0
@@ -232,9 +240,11 @@ def cleanup_old_logs(logger: logging.Logger, max_files: int = 15,
         return
 
     prefix = log_prefix or LOG_PREFIX
+    active_log_paths = _get_active_file_handler_paths()
     log_files = [
         path for path in log_dir.glob("*.log")
         if path.name.startswith(f"{prefix}_")
+        and path.resolve() not in active_log_paths
     ]
     deleted_paths = set()
     cutoff_time = time() - max_days * 24 * 60 * 60

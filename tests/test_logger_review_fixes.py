@@ -29,6 +29,7 @@ class LoggerReviewFixesTest(unittest.TestCase):
             "test_cleanup",
             "test_file_collision_a",
             "test_file_collision_b",
+            "test_cleanup_keeps_active_file",
         ]:
             logger = logging.getLogger(name)
             for handler in list(logger.handlers):
@@ -202,6 +203,43 @@ class LoggerReviewFixesTest(unittest.TestCase):
 
             self.assertFalse(new_log.exists())
             self.assertTrue(other_log.exists())
+
+    def test_cleanup_old_logs_keeps_active_file_handler_path(self) -> None:
+        """日志清理不应删除当前进程正在写入的日志文件。"""
+        logger = setup_logger("test_cleanup_keeps_active_file")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_handler = add_file_logger(
+                logger,
+                log_dir=temp_dir,
+                log_prefix="App",
+            )
+            active_log = Path(file_handler.baseFilename)
+            records = []
+            capture_handler = logging.Handler()
+            capture_handler.emit = records.append
+            logger.addHandler(capture_handler)
+
+            try:
+                cleanup_old_logs(
+                    logger,
+                    max_files=0,
+                    max_days=7,
+                    log_dir=temp_dir,
+                    log_prefix="App",
+                )
+
+                self.assertTrue(active_log.exists())
+                self.assertFalse(
+                    any(
+                        "删除日志文件" in record.getMessage()
+                        for record in records
+                    )
+                )
+            finally:
+                logger.removeHandler(capture_handler)
+                logger.removeHandler(file_handler)
+                capture_handler.close()
+                file_handler.close()
 
     def test_cleanup_old_logs_treats_glob_chars_as_literal_prefix(self) -> None:
         """日志清理应按字面量前缀过滤，不扩大 glob 匹配范围。"""
