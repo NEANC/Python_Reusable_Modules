@@ -127,6 +127,12 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             "PRN",
             "COM1",
             "LPT1",
+            "CON.txt",
+            "NUL.log",
+            "AUX.any",
+            "PRN.1",
+            "COM1.exe",
+            "LPT1.tmp",
         )
         for app_name in unsafe_names:
             with self.subTest(app_name=app_name):

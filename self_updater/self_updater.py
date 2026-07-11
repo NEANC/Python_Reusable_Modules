@@ -97,13 +97,14 @@ class SelfUpdater:
     @classmethod
     def _validate_app_name(cls, app_name: str) -> None:
         """校验应用名称只能包含安全的文件名字符。"""
+        app_name_base = app_name.split(".", 1)[0].upper() if app_name else ""
         invalid_name = (
             not app_name
             or not cls._APP_NAME_PATTERN.fullmatch(app_name)
             or app_name.strip(".") == ""
             or app_name.startswith(".")
             or app_name.endswith(".")
-            or app_name.upper() in cls._WINDOWS_RESERVED_NAMES
+            or app_name_base in cls._WINDOWS_RESERVED_NAMES
         )
         if invalid_name:
             raise ValueError(
