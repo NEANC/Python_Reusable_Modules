@@ -207,6 +207,25 @@ class ConfigIniReviewFixesTest(unittest.TestCase):
 
             self.assertTrue(Path(manager.get_attr("install_folder")).is_absolute())
             self.assertTrue(manager.get_attr("install_folder").endswith("Temp"))
+    def test_load_backs_up_original_config_before_regenerating_default(self):
+        """修复后仍无法解析时，重建默认配置前应保留原始内容备份。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.ini"
+            original_text = (
+                "[Paths\n"
+                "install_folder = C:\\CustomApp\n"
+                "[Update]\n"
+                "channel = preview\n"
+            )
+            config_path.write_text(original_text, encoding="utf-8")
+            manager = self.make_manager(config_path)
+            with patch.object(manager, "_sanitize_config_file", lambda: None):
+                manager.load()
+
+            backup_paths = sorted(config_path.parent.glob("config.ini.bak*"))
+            self.assertEqual(1, len(backup_paths))
+            self.assertEqual(original_text, backup_paths[0].read_text(encoding="utf-8"))
+            self.assertNotEqual(original_text, config_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

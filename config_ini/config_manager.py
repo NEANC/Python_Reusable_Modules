@@ -173,6 +173,26 @@ class ConfigManager:
         else:
             sys.exit(0)
 
+    def _backup_config_file(self) -> None:
+        """备份当前配置文件，避免重建默认配置时覆盖用户原始内容。"""
+        if not os.path.exists(self.config_file):
+            return
+
+        backup_path = self.config_file + '.bak'
+        index = 1
+        while os.path.exists(backup_path):
+            backup_path = f'{self.config_file}.bak.{index}'
+            index += 1
+
+        try:
+            with open(self.config_file, 'rb') as source:
+                content = source.read()
+            with open(backup_path, 'wb') as target:
+                target.write(content)
+            self.logger.info(f"已备份损坏配置文件: {backup_path}")
+        except OSError as e:
+            self.logger.error(f"备份配置文件失败: {e}")
+
     def _regenerate_config_file(self) -> None:
         """
         重建配置文件，保留所有已有值，仅补充缺失的模板键。
@@ -395,6 +415,7 @@ class ConfigManager:
                     self._sanitize_config_file()
                 elif pass_num == 1:
                     self.logger.critical("修复失败，将重新生成配置文件")
+                    self._backup_config_file()
                     self._generate_default_config()
                 else:
                     self.logger.critical(f"配置文件无法修复: {e}")
