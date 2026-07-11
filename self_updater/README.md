@@ -32,11 +32,12 @@ colorama>=0.4.6
 
 ```
 self_updater/
-├── __init__.py       # 包入口，重导出所有公开 API
-├── self_utils.py     # 工具函数（版本比较、SHA256、打包检测）
-├── self_config.py    # UpdateState（INI 状态文件管理）
-├── self_updater.py   # SelfUpdater 核心类
-├── self_progress.py  # tqdm 进度条 + colorama 颜色封装
+├── __init__.py        # 包入口，重导出公开 API
+├── self_utils.py      # 工具函数（版本比较、SHA256、打包检测）
+├── self_config.py     # UpdateState（INI 状态文件管理）
+├── self_updater.py    # SelfUpdater 核心类与脚本生成流程
+├── ps1_fragments.py   # PowerShell 脚本片段生成函数
+├── self_progress.py   # tqdm 进度条 + colorama 颜色封装
 └── README.md
 ```
 
@@ -46,6 +47,7 @@ self_updater/
 
 ```python
 import logging
+import os
 import sys
 from self_updater import SelfUpdater, detect_package_type
 
@@ -53,18 +55,21 @@ from self_updater import SelfUpdater, detect_package_type
 is_bundled, package_type = detect_package_type()
 
 # 2. 创建更新器
+cache_root = os.getenv("LOCALAPPDATA") or os.getenv("TEMP") or os.getcwd()
+temp_folder = os.path.join(cache_root, "MyApp", "SelfUpdate")
+
 logger = logging.getLogger("MyApp")
 updater = SelfUpdater(
-    github_repo="you/your-repo",                                       # GitHub 仓库
-    asset_pattern=r'^MyApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',     # exe 文件名正则
-    app_name="MyApp",                                                  # 安全应用标识
-    current_version="v1.0.0",                                          # 当前版本号
-    proxy="",                                                          # HTTP 代理（留空则不使用）
-    temp_folder="/tmp/MyApp",                                          # 可选：临时目录（不传则自动解析）
+    github_repo="you/your-repo",                                      # GitHub 仓库
+    asset_pattern=r"^MyApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",    # exe 文件名正则
+    app_name="MyApp",                                                 # 安全应用标识
+    current_version="v1.0.0",                                         # 当前版本号
+    proxy="",                                                         # HTTP 代理（留空则不使用）
+    temp_folder=temp_folder,                                          # 可选：临时目录（不传则自动解析）
     logger=logger,
-    self_update_channel="preview",                                     # 'preview' 或 'stable'
-    is_bundled=is_bundled,                                             # 可选：预检测结果
-    package_type=package_type,                                         # 可选：打包方式
+    self_update_channel="preview",                                    # "preview" 或 "stable"
+    is_bundled=is_bundled,                                            # 可选：预检测结果
+    package_type=package_type,                                        # 可选：打包方式
 )
 
 # 如需自定义进度条，可传入 download_func=(url, save_path) -> bool。
@@ -81,8 +86,15 @@ if need_exit:
 
 ```python
 import argparse
+import logging
+import os
 import sys
 from self_updater import SelfUpdater, detect_package_type
+
+APP_VERSION = "v1.0.0"
+cache_root = os.getenv("LOCALAPPDATA") or os.getenv("TEMP") or os.getcwd()
+temp_folder = os.path.join(cache_root, "YourApp", "SelfUpdate")
+logger = logging.getLogger("YourApp")
 
 # ── 命令行参数 ──
 parser = argparse.ArgumentParser()
@@ -118,10 +130,10 @@ if args.retry_update:
         github_repo="you/your-repo",
         asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
         app_name="YourApp",
-        current_version="v1.0.0",
+        current_version=APP_VERSION,
         proxy="",
-        # temp_folder 可选，不传则自动解析（系统缓存 > 脚本目录）
-        temp_folder="/tmp/your-app",
+        # 使用环境变量解析出的临时目录
+        temp_folder=temp_folder,
         logger=logger,
         is_bundled=is_bundled,
         package_type=package_type,
@@ -153,10 +165,10 @@ if args.update or args.update_force:
         github_repo="you/your-repo",
         asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
         app_name="YourApp",
-        current_version="v1.0.0",
+        current_version=APP_VERSION,
         proxy="",
-        # temp_folder 可选，不传则自动解析（系统缓存 > 脚本目录）
-        temp_folder="/tmp/your-app",
+        # 使用环境变量解析出的临时目录
+        temp_folder=temp_folder,
         logger=logger,
         is_bundled=is_bundled,
         package_type=package_type,
@@ -252,6 +264,23 @@ SelfUpdater._cleanup_update_residue(logger)
 | `format_error(desc, reason)`             | 格式化错误消息（亮红色加粗） |
 | `format_warn(msg)`                       | 格式化警告消息（亮黄色加粗） |
 
+## PowerShell 片段 (`self_updater.ps1_fragments`)
+
+`ps1_fragments.py` 负责生成 Helper.ps1 和 Update.ps1 复用的 PowerShell 函数片段。该模块是内部实现细节，不属于公开 API。
+
+| 函数 | 说明 |
+| ---- | ---- |
+| `generate_common_base_functions_ps1()` | 生成 `Normalize-IniValue`、`Assert-NotEmpty`、`Write-Log`。 |
+| `generate_common_state_functions_ps1()` | 生成 `Read-IniValue`、`Write-IniValue`、`Set-UpdateStatus`。 |
+| `generate_move_with_retry_ps1()` | 生成 `Move-WithRetry`。 |
+| `generate_sha256_function_ps1()` | 生成 `Get-SHA256`，支持 SHA256 多路径回退。 |
+| `generate_helper_argument_functions_ps1()` | 生成 Helper 专用的 `Quote-Arg`。 |
+| `generate_helper_retry_functions_ps1()` | 生成 Helper 专用的 `Get-RetryOrDefault`。 |
+| `generate_helper_file_cleanup_functions_ps1()` | 生成 Helper 专用的 `Remove-WithRetry`。 |
+| `generate_helper_lifecycle_functions_ps1()` | 生成 `Commit-Update`、`Restore-Backup`、`Start-ProcWait`、`Start-NormalAppVisible`。 |
+
+生成脚本时，`SelfUpdater` 只负责脚本头、变量初始化、片段拼接、主流程和写文件逻辑。共享函数会同时进入 Helper.ps1 和 Update.ps1；Helper 专用函数只进入 Helper.ps1。
+
 ---
 
 ## 工作流程
@@ -284,6 +313,29 @@ Helper.ps1:
 ├── 验证通过 → 提交 (Commit-Update) → 启动新版
 └── 验证失败 → 回滚 (Restore-Backup) → 重试 / 禁用
 ```
+
+Update.ps1 负责文件替换：
+
+```
+Update.ps1:
+├── 读取 update_state.ini 中的 target、new_file、backup_file、new_sha256
+├── 校验 new_file 存在且路径互不相同
+├── 校验新文件 SHA256
+├── 删除旧 backup 文件
+├── 移动 target → backup_file
+└── 移动 new_file → target
+```
+
+### PowerShell SHA256 回退
+
+Helper.ps1 和 Update.ps1 都通过 `Get-SHA256($filePath)` 计算文件哈希。该函数按以下顺序尝试：
+
+1. `.NET`：`[System.Security.Cryptography.SHA256]::Create()` + `[System.IO.File]::OpenRead()`。
+2. `Get-FileHash`：先用 `Get-Command Get-FileHash` 探测可用性，再用 `-LiteralPath` 计算。
+3. `certutil.exe -hashfile`：解析输出中的 64 位 SHA256 十六进制字符串。
+4. 全部失败：抛出 `Get-SHA256 failed: ...`，不会跳过校验。
+
+这几种路径输出统一为小写、无分隔符的 64 位 SHA256 字符串。
 
 ---
 
