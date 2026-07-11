@@ -101,7 +101,34 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
     def test_app_name_rejects_unsafe_values(self):
         """应用名称应拒绝空值、路径分隔符和脚本注入字符。"""
-        for app_name in ("", "Bad;Name", "Bad/Name"):
+        unsafe_names = (
+            "",
+            "Bad;Name",
+            "Bad/Name",
+            "Bad\\Name",
+            "Bad:Name",
+            "Bad*Name",
+            "Bad?Name",
+            "Bad\"Name",
+            "Bad<Name",
+            "Bad>Name",
+            "Bad|Name",
+            "Bad&Name",
+            "Bad`Name",
+            "Bad$Name",
+            ".",
+            "..",
+            "...",
+            "App.",
+            ".App",
+            "CON",
+            "NUL",
+            "AUX",
+            "PRN",
+            "COM1",
+            "LPT1",
+        )
+        for app_name in unsafe_names:
             with self.subTest(app_name=app_name):
                 with self.assertRaises(ValueError):
                     self.make_updater(app_name=app_name)

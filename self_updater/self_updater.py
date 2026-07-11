@@ -51,6 +51,11 @@ class SelfUpdater:
     """自更新器，负责自我更新检查、下载、替换、回滚"""
 
     _APP_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+    _WINDOWS_RESERVED_NAMES = {
+        "CON", "NUL", "AUX", "PRN",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }
 
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
                  current_version: str, proxy: str,
@@ -92,9 +97,18 @@ class SelfUpdater:
     @classmethod
     def _validate_app_name(cls, app_name: str) -> None:
         """校验应用名称只能包含安全的文件名字符。"""
-        if not app_name or not cls._APP_NAME_PATTERN.fullmatch(app_name):
+        invalid_name = (
+            not app_name
+            or not cls._APP_NAME_PATTERN.fullmatch(app_name)
+            or app_name.strip(".") == ""
+            or app_name.startswith(".")
+            or app_name.endswith(".")
+            or app_name.upper() in cls._WINDOWS_RESERVED_NAMES
+        )
+        if invalid_name:
             raise ValueError(
-                "app_name 只能包含英文字母、数字、下划线、点和连字符"
+                "app_name 只能包含英文字母、数字、下划线、点和连字符，"
+                "且不能为纯点号、首尾点号或 Windows 保留设备名"
             )
 
     def _resolve_temp_folder(self, temp_folder: Optional[str]) -> str:
