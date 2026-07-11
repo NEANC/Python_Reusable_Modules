@@ -50,6 +50,45 @@ def _find_file_handler(logger: logging.Logger, log_dir: Path,
     return None
 
 
+def _iter_all_file_handlers():
+    """遍历当前进程中所有 logger 的文件日志 handler。"""
+    seen_handlers = set()
+    loggers = [logging.getLogger()]
+    for logger_obj in logging.root.manager.loggerDict.values():
+        if isinstance(logger_obj, logging.Logger):
+            loggers.append(logger_obj)
+
+    for logger in loggers:
+        for handler in logger.handlers:
+            if not isinstance(handler, logging.FileHandler):
+                continue
+            handler_id = id(handler)
+            if handler_id in seen_handlers:
+                continue
+            seen_handlers.add(handler_id)
+            yield handler
+
+
+def _is_file_path_in_use(log_file: Path) -> bool:
+    """判断日志路径是否已被当前进程中的文件 handler 使用。"""
+    resolved_file = log_file.resolve()
+    for handler in _iter_all_file_handlers():
+        if Path(handler.baseFilename).resolve() == resolved_file:
+            return True
+    return False
+
+
+def _make_available_log_file(log_dir: Path, prefix: str, timestamp: str) -> Path:
+    """生成保持秒级主时间戳的可用日志文件路径。"""
+    index = 0
+    while True:
+        suffix = "" if index == 0 else f"_{index}"
+        log_file = log_dir / f"{prefix}_{timestamp}{suffix}.log"
+        if not log_file.exists() and not _is_file_path_in_use(log_file):
+            return log_file
+        index += 1
+
+
 class ColoredFormatter(logging.Formatter):
     """带颜色的日志格式化器，仅作用于控制台输出"""
 
@@ -149,7 +188,8 @@ def add_file_logger(logger: logging.Logger, version: str = "",
     if existing_handler:
         return existing_handler
 
-    log_file = log_dir / f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = _make_available_log_file(log_dir, prefix, timestamp)
 
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
@@ -192,7 +232,10 @@ def cleanup_old_logs(logger: logging.Logger, max_files: int = 15,
         return
 
     prefix = log_prefix or LOG_PREFIX
-    log_files = list(log_dir.glob(f"{prefix}_*.log"))
+    log_files = [
+        path for path in log_dir.glob("*.log")
+        if path.name.startswith(f"{prefix}_")
+    ]
     deleted_paths = set()
     cutoff_time = time() - max_days * 24 * 60 * 60
 
