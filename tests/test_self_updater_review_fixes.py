@@ -84,6 +84,20 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self._assert_sha256_fallbacks(content, "SHA256 fragment")
         self.assertEqual(1, content.count("function Get-SHA256($filePath)"))
 
+    def test_common_fragments_include_shared_functions(self):
+        """公共片段应包含 Helper 与 Update 共享函数。"""
+        base = ps1_fragments.generate_common_base_functions_ps1()
+        state = ps1_fragments.generate_common_state_functions_ps1()
+        move = ps1_fragments.generate_move_with_retry_ps1()
+
+        self.assertIn("function Normalize-IniValue", base)
+        self.assertIn("function Assert-NotEmpty", base)
+        self.assertIn("function Write-Log", base)
+        self.assertIn("function Read-IniValue", state)
+        self.assertIn("function Write-IniValue", state)
+        self.assertIn("function Set-UpdateStatus", state)
+        self.assertIn("function Move-WithRetry", move)
+
     def test_fetch_current_release_sha256_requires_exact_package_type(self):
         """当前版本完整性校验不应降级匹配其他打包方式。"""
         pyinstaller_sha256 = "a" * 64
