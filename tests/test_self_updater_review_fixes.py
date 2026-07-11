@@ -295,6 +295,59 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertIn("$actual = Get-SHA256 $target", helper_text)
             self.assertIn("$actual = Get-SHA256 $newFile", update_text)
 
+    def test_generated_ps1_uses_expected_shared_and_helper_fragments(self):
+        """生成的 Helper 与 Update 脚本应按职责拼接共享和专用函数。"""
+        shared_functions = (
+            "function Normalize-IniValue",
+            "function Read-IniValue",
+            "function Write-IniValue",
+            "function Set-UpdateStatus",
+            "function Move-WithRetry",
+        )
+        helper_only_functions = (
+            "function Quote-Arg",
+            "function Restore-Backup",
+            "function Start-ProcWait",
+            "function Start-NormalAppVisible",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater = self.make_updater()
+            updater._generate_helper_ps1(Path(temp_dir))
+            updater._generate_update_ps1(Path(temp_dir))
+
+            helper_text = (Path(temp_dir) / "App_Update_Helper.ps1").read_text(encoding="utf-8-sig")
+            update_text = (Path(temp_dir) / "App_Update.ps1").read_text(encoding="utf-8-sig")
+
+            for function_name in shared_functions:
+                with self.subTest(script="Helper.ps1", function_name=function_name):
+                    self.assertEqual(1, helper_text.count(function_name))
+                with self.subTest(script="Update.ps1", function_name=function_name):
+                    self.assertEqual(1, update_text.count(function_name))
+
+            for function_name in helper_only_functions:
+                with self.subTest(script="Helper.ps1", function_name=function_name):
+                    self.assertIn(function_name, helper_text)
+                with self.subTest(script="Update.ps1", function_name=function_name):
+                    self.assertNotIn(function_name, update_text)
+
+            self.assertLess(
+                helper_text.index("function Write-Log"),
+                helper_text.index("function Write-IniValue"),
+            )
+            self.assertLess(
+                helper_text.index("function Write-IniValue"),
+                helper_text.index("function Set-UpdateStatus"),
+            )
+            self.assertLess(
+                update_text.index("function Write-Log"),
+                update_text.index("function Write-IniValue"),
+            )
+            self.assertLess(
+                update_text.index("function Write-IniValue"),
+                update_text.index("function Set-UpdateStatus"),
+            )
+
     def test_readme_documents_verify_version_func_requirement(self):
         """README 应说明未传 version_func 时只校验 SHA256。"""
         readme_path = Path(__file__).resolve().parents[1] / "self_updater" / "README.md"
