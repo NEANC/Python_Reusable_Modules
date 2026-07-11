@@ -68,7 +68,7 @@ updater = SelfUpdater(
 )
 
 # 3. 检查并准备更新
-need_exit = updater.check_self_update()       # 普通升级（仅当远端更旧时升级）
+need_exit = updater.check_self_update()       # 普通升级（仅当远端更新时升级）
 # need_exit = updater.check_self_update(force=True)  # 强制升级（跳过版本比较）
 
 if need_exit:
@@ -104,6 +104,7 @@ if args.self_update_verify:
     exit_code = SelfUpdater.self_update_verify(
         expected_sha256=args.expected_sha256,
         expected_version=args.expected_version,
+        version_func=lambda: APP_VERSION,  # 返回应用内部版本号；不传则仅校验 SHA256
     )
     sys.exit(exit_code)
 
@@ -184,7 +185,7 @@ SelfUpdater._cleanup_update_residue(logger)
 | `temp_folder`         | `str`                | 否   | 临时文件存储目录；不传则自动解析（系统缓存 > 脚本目录） |
 | `logger`              | `logging.Logger`     | 是   | 日志记录器                                              |
 | `download_func`       | `(str, str) -> bool` | 否   | 自定义下载函数 `(url, save_path) -> bool`               |
-| `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认）或 `"stable"`              |
+| `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认，兼容旧值 `"release"`）或 `"stable"`（兼容旧值 `"latest"`） |
 | `is_bundled`          | `bool`               | 否   | 预检测的打包标记，避免重复调用 `detect_package_type()`  |
 | `package_type`        | `str`                | 否   | 预检测的打包方式：`"Nuitka"` 或 `"PyInstaller"`         |
 
@@ -304,8 +305,8 @@ Helper.ps1:
 
 ## 注意事项
 
-1. **仅支持 Windows**：PS1 脚本依赖 PowerShell，不跨平台。
-2. **Asset 命名规范**：exe asset 必须匹配给定的正则，且包含 `Nuitka` 或 `PyInstaller` 关键字。
-3. **Release 要求**：每个 release 需在 body 中包含对应 exe 的 SHA256 值（否则跳过更新）。
+1. **仅支持 Windows**：PS1 脚本依赖 PowerShell 5.1 或更高版本。
+2. **Asset 命名规范**：exe asset 文件名必须匹配给定的正则，且包含 `Nuitka` 或 `PyInstaller` 关键字。
+3. **Release 要求**：Release 需提供对应 exe 的 SHA256；优先读取 asset `digest` 中的 `sha256:...`，否则从 release body 中匹配包含文件名的 64 位 SHA256。
 4. **缓存机制**：下载的 exe 缓存到 `{temp_folder}/UpdateCache/installs/{version}/`，下次启动直接复用。
 5. **失败禁用**：同一版本连续失败 3 次后标记为 `failed_disabled`，后续自动跳过该版本。
