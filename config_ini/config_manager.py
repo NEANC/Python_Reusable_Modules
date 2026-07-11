@@ -232,7 +232,7 @@ class ConfigManager:
                 pass
 
     def _sanitize_config_file(self) -> None:
-        """逐行清理损坏行：空键值行删除，无 = 行注释掉"""
+        """逐行清理损坏行：空键值行删除，无 = 行注释掉，节外键值行注释掉"""
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -240,6 +240,7 @@ class ConfigManager:
             return
 
         fixed = False
+        in_section = False
         new_lines = []
         for line in lines:
             stripped = line.strip()
@@ -247,6 +248,7 @@ class ConfigManager:
                 new_lines.append(line)
                 continue
             if re.match(r'^\[.+\]$', stripped):
+                in_section = True
                 new_lines.append(line)
                 continue
             if '=' not in stripped:
@@ -255,6 +257,10 @@ class ConfigManager:
                 continue
             key, sep, val = stripped.partition('=')
             if not key.strip():
+                fixed = True
+                continue
+            if not in_section:
+                new_lines.append(f'# [已修复] {line}')
                 fixed = True
                 continue
             new_lines.append(line)

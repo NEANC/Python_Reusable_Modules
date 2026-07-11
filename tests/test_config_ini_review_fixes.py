@@ -160,6 +160,34 @@ class ConfigIniReviewFixesTest(unittest.TestCase):
             self.assertIn("[__migrations__]", text)
             self.assertIn("7 = done", text)
 
+    def test_load_sanitizes_key_value_before_first_section(self):
+        """节外键值行不应导致合法配置被重建为默认配置。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.ini"
+            first_run_calls = []
+            config_path.write_text(
+                "temp_folder = Temp\n"
+                "[Paths]\n"
+                "install_folder = C:\\CustomApp\n"
+                "[Update]\n"
+                "channel = preview\n",
+                encoding="utf-8",
+            )
+            manager = ConfigManager(
+                config_file=str(config_path),
+                logger=self.logger,
+                default_sections=DEFAULT_SECTIONS,
+                comments=COMMENTS,
+                app_name="TestApp",
+                first_run_callback=lambda: first_run_calls.append("called"),
+            )
+
+            manager.load()
+
+            self.assertEqual([], first_run_calls)
+            self.assertEqual(r"C:\CustomApp", manager.get_attr("install_folder"))
+            self.assertEqual("preview", manager.get_attr("channel"))
+
     def test_registered_path_keys_are_resolved(self):
         """register_path_key 应对注册的路径键生效。"""
         with tempfile.TemporaryDirectory() as temp_dir:
