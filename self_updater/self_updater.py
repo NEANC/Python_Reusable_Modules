@@ -30,6 +30,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .ps1_fragments import generate_common_base_functions_ps1
 from .ps1_fragments import generate_common_state_functions_ps1
+from .ps1_fragments import generate_helper_argument_functions_ps1
+from .ps1_fragments import generate_helper_file_cleanup_functions_ps1
+from .ps1_fragments import generate_helper_lifecycle_functions_ps1
+from .ps1_fragments import generate_helper_retry_functions_ps1
 from .ps1_fragments import generate_move_with_retry_ps1
 from .ps1_fragments import generate_sha256_function_ps1
 from .self_config import UpdateState
@@ -578,174 +582,15 @@ class SelfUpdater:
             $stateFile = Join-Path $scriptDir "update_state.ini"
             $logFile   = Join-Path $scriptDir "update.log"
             $updatePs1 = Join-Path $scriptDir "__APP___Update.ps1"
-        """).replace("__APP__", self.app_name) + generate_common_base_functions_ps1() + textwrap.dedent(r"""
-
-            function Quote-Arg($arg) {
-                if ($null -eq $arg) { return '""' }
-                $s = [string]$arg
-                $s = $s -replace '\\(?=")', '\\'
-                $s = $s -replace '"', '\"'
-                if ($s -match '\s' -or $s -eq '') {
-                    return '"' + $s + '"'
-                }
-                return $s
-            }
-        """) + generate_sha256_function_ps1() + generate_common_state_functions_ps1() + textwrap.dedent(r"""
-
-            function Get-RetryOrDefault($name, $default) {
-                $val = Read-IniValue "Retry" $name
-                if ($val -match '^\d+$') { return [int]$val }
-                return $default
-            }
-
-            function Remove-WithRetry($path, $timeoutSec) {
-                $deadline = (Get-Date).AddSeconds($timeoutSec)
-                $lastError = $null
-                while ((Get-Date) -lt $deadline) {
-                    try {
-                        if (Test-Path -LiteralPath $path) {
-                            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
-                        }
-                        return
-                    } catch {
-                        $lastError = $_.Exception.Message
-                        Start-Sleep -Milliseconds 1000
-                    }
-                }
-                throw "Remove failed after retry: $path ; $lastError"
-            }
-        """) + generate_move_with_retry_ps1() + textwrap.dedent(r"""
-
-            function Commit-Update {
-                try {
-                    $backup = Read-IniValue "Files" "backup_file"
-                    Write-IniValue "Retry" "retry_count" "0"
-                    Write-IniValue "State" "last_error" ""
-                    Write-IniValue "State" "state" "verified"
-                    if ($backup -and (Test-Path -LiteralPath $backup)) {
-                        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-                    }
-                    if (Test-Path -LiteralPath $lockFile) {
-                        Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
-                    }
-                    Write-Log "INFO" "update committed"
-                } catch {
-                    Write-Log "WARN" "Commit-Update failed: $($_.Exception.Message)"
-                }
-            }
-
-            function Restore-Backup($reason) {
-                Set-UpdateStatus "rollback" "rollback_start" "准备回滚：$reason" 80 "ERROR"
-                try {
-                    $target = Read-IniValue "Files" "target"
-                    $backup = Read-IniValue "Files" "backup_file"
-
-                    Assert-NotEmpty "Files.target" $target
-                    Assert-NotEmpty "Files.backup_file" $backup
-
-                    if (!(Test-Path -LiteralPath $backup)) {
-                        Set-UpdateStatus "failed_disabled" "rollback_no_backup" "备份文件不存在: $backup" 100 "ERROR"
-                        if (Test-Path -LiteralPath $target) {
-                            Start-NormalAppVisible $target @('--update-failed')
-                        }
-                        exit 2
-                    }
-
-                    if (Test-Path -LiteralPath $target) {
-                        Remove-WithRetry $target 30
-                    }
-                    Move-WithRetry $backup $target 60
-                    Set-UpdateStatus "rollback_done" "rollback_done" "已恢复旧版本：$reason" 100 "ERROR"
-
-                    $retry = Get-RetryOrDefault "retry_count" 0
-                    $max   = Get-RetryOrDefault "max_retry" 3
-                    $retry++
-                    Write-IniValue "Retry" "retry_count" "$retry"
-
-                    if ($retry -lt $max) {
-                        Start-NormalAppVisible $target @('--retry-update')
-                    } else {
-                        Set-UpdateStatus "failed_disabled" "retry_limit_reached" "更新失败次数达到上限，已禁用本版本更新" 100 "ERROR"
-                        Start-NormalAppVisible $target @('--update-failed')
-                    }
-                    exit 1
-                } catch {
-                    Set-UpdateStatus "failed_disabled" "rollback_failed" "回滚失败: $($_.Exception.Message)" 100 "ERROR"
-                    exit 3
-                }
-            }
-
-            function Start-ProcWait($filePath, [string[]]$argList, $timeoutSec, [bool]$resetPyInstallerEnv = $false) {
-                $psi = New-Object System.Diagnostics.ProcessStartInfo
-                $psi.FileName = $filePath
-                $psi.UseShellExecute = $false
-                $psi.CreateNoWindow = $true
-                $psi.WorkingDirectory = Split-Path -Parent $filePath
-                $argsArr = @($argList | ForEach-Object { Quote-Arg $_ })
-                $psi.Arguments = if ($argsArr.Count -gt 0) { $argsArr -join ' ' } else { '' }
-
-                if ($resetPyInstallerEnv) {
-                    $psi.EnvironmentVariables["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-                    foreach ($k in @("_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
-                                     "_PYI_APPLICATION_HOME_DIR", "_PYI_SPLASH_IPC",
-                                     "_PYI_LINUX_PROCESS_NAME")) {
-                        if ($psi.EnvironmentVariables.ContainsKey($k)) {
-                            $psi.EnvironmentVariables.Remove($k)
-                        }
-                    }
-                }
-
-                $proc = [System.Diagnostics.Process]::Start($psi)
-                if ($proc.WaitForExit($timeoutSec * 1000)) {
-                    return $proc.ExitCode
-                }
-                try {
-                    if (-not $proc.HasExited) {
-                        $proc.Kill()
-                        $proc.WaitForExit(5000) | Out-Null
-                    }
-                } catch {}
-                return -1
-            }
-
-            function Start-NormalAppVisible($filePath, [string[]]$argList = @()) {
-                $workDir = Split-Path -Parent $filePath
-
-                $oldReset = [Environment]::GetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT", "Process")
-                $oldPyi = @{}
-                $pyiKeys = @("_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
-                             "_PYI_APPLICATION_HOME_DIR", "_PYI_SPLASH_IPC",
-                             "_PYI_LINUX_PROCESS_NAME")
-                foreach ($k in $pyiKeys) {
-                    $oldPyi[$k] = [Environment]::GetEnvironmentVariable($k, "Process")
-                }
-
-                try {
-                    [Environment]::SetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT", "1", "Process")
-                    foreach ($k in $pyiKeys) {
-                        [Environment]::SetEnvironmentVariable($k, $null, "Process")
-                    }
-
-                    $argsArr = @($argList | ForEach-Object { Quote-Arg $_ })
-                    $argString = if ($argsArr.Count -gt 0) { $argsArr -join ' ' } else { '' }
-
-                    $startArgs = @{
-                        FilePath = $filePath
-                        WorkingDirectory = $workDir
-                        WindowStyle = 'Normal'
-                    }
-                    if ($argString) {
-                        $startArgs.ArgumentList = $argString
-                    }
-                    Start-Process @startArgs
-                }
-                finally {
-                    [Environment]::SetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT", $oldReset, "Process")
-                    foreach ($k in $pyiKeys) {
-                        [Environment]::SetEnvironmentVariable($k, $oldPyi[$k], "Process")
-                    }
-                }
-            }
+        """).replace("__APP__", self.app_name) + generate_common_base_functions_ps1()
+        ps1_content += generate_helper_argument_functions_ps1()
+        ps1_content += generate_sha256_function_ps1()
+        ps1_content += generate_common_state_functions_ps1()
+        ps1_content += generate_helper_retry_functions_ps1()
+        ps1_content += generate_helper_file_cleanup_functions_ps1()
+        ps1_content += generate_move_with_retry_ps1()
+        ps1_content += generate_helper_lifecycle_functions_ps1()
+        ps1_content += textwrap.dedent(r"""
 
             try {
                 Set-UpdateStatus "helper_started" "helper_started" "更新 Helper 已启动" 10 "INFO"

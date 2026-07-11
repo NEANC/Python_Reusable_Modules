@@ -98,6 +98,21 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("function Set-UpdateStatus", state)
         self.assertIn("function Move-WithRetry", move)
 
+    def test_helper_fragments_include_helper_only_functions(self):
+        """Helper 独有片段应包含 Helper 专用函数。"""
+        args = ps1_fragments.generate_helper_argument_functions_ps1()
+        retry = ps1_fragments.generate_helper_retry_functions_ps1()
+        cleanup = ps1_fragments.generate_helper_file_cleanup_functions_ps1()
+        lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+
+        self.assertIn("function Quote-Arg", args)
+        self.assertIn("function Get-RetryOrDefault", retry)
+        self.assertIn("function Remove-WithRetry", cleanup)
+        self.assertIn("function Commit-Update", lifecycle)
+        self.assertIn("function Restore-Backup", lifecycle)
+        self.assertIn("function Start-ProcWait", lifecycle)
+        self.assertIn("function Start-NormalAppVisible", lifecycle)
+
     def test_fetch_current_release_sha256_requires_exact_package_type(self):
         """当前版本完整性校验不应降级匹配其他打包方式。"""
         pyinstaller_sha256 = "a" * 64
