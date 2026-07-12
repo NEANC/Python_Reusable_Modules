@@ -51,7 +51,7 @@ class FakeExitedProcess:
 class SelfUpdaterReviewFixesTest(unittest.TestCase):
     """覆盖代码审查反馈中的关键修复项。"""
 
-    def make_updater(self, current_version="v1.0.0", app_name="App"):
+    def make_updater(self, current_version="v1.0.0", app_name="App", temp_folder=None):
         """创建测试用 SelfUpdater 实例。"""
         return SelfUpdater(
             github_repo="owner/repo",
@@ -60,9 +60,27 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             current_version=current_version,
             proxy="",
             logger=logging.getLogger("SelfUpdaterTest"),
+            temp_folder=temp_folder,
             is_bundled=True,
             package_type="Nuitka",
         )
+
+    def _make_runtime_paths(self, root: Path, temp_folder_name="self-update"):
+        """构造测试用程序目录、临时目录和运行时路径。"""
+        program_dir = root / "program"
+        temp_folder = root / temp_folder_name
+        program_dir.mkdir()
+        current_exe = program_dir / "App.exe"
+        current_exe.write_bytes(b"old")
+        updater = self.make_updater(temp_folder=str(temp_folder))
+        paths = updater._build_update_runtime_paths(current_exe, "v1.2.0")
+        paths["runtime_dir"].mkdir(parents=True, exist_ok=True)
+        return updater, current_exe, paths
+
+    @staticmethod
+    def _ps1_expected_path(path: Path) -> str:
+        """转换测试期望的 PowerShell 双引号路径内容。"""
+        return str(path).replace('`', '``').replace('"', '`"').replace('$', '`$')
 
     def test_resolve_temp_folder_uses_localappdata_selfupdate_by_default(self):
         """未传 temp_folder 时应默认使用 LOCALAPPDATA 下的应用自更新目录。"""
@@ -398,15 +416,46 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertIsNotNone(loaded)
             self.assertIn("helper.ps1", loaded["last_error"])
 
+    def test_generated_ps1_uses_injected_program_state_and_runtime_paths(self):
+        """生成的 PS1 应使用注入的程序状态、日志和运行时路径。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, _, paths = self._make_runtime_paths(root, "self$`update")
+            updater._generate_helper_ps1(paths)
+            updater._generate_update_ps1(paths)
+
+            helper_text = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+            update_text = paths["update_ps1"].read_text(encoding="utf-8-sig")
+            expected_runtime_dir = self._ps1_expected_path(paths["runtime_dir"])
+            expected_state_file = self._ps1_expected_path(paths["state_file"])
+            expected_log_file = self._ps1_expected_path(paths["log_file"])
+            expected_lock_file = self._ps1_expected_path(paths["lock_file"])
+            expected_update_ps1 = self._ps1_expected_path(paths["update_ps1"])
+
+            self.assertIn(f'$runtimeDir = "{expected_runtime_dir}"', helper_text)
+            self.assertIn(f'$runtimeDir = "{expected_runtime_dir}"', update_text)
+            self.assertIn('$scriptDir  = $runtimeDir', helper_text)
+            self.assertIn('$scriptDir  = $runtimeDir', update_text)
+            self.assertIn(f'$stateFile  = "{expected_state_file}"', helper_text)
+            self.assertIn(f'$stateFile  = "{expected_state_file}"', update_text)
+            self.assertIn(f'$logFile    = "{expected_log_file}"', helper_text)
+            self.assertIn(f'$logFile    = "{expected_log_file}"', update_text)
+            self.assertIn(f'$lockFile   = "{expected_lock_file}"', helper_text)
+            self.assertIn(f'$updatePs1  = "{expected_update_ps1}"', helper_text)
+            self.assertNotIn('$stateFile = Join-Path $scriptDir "update_state.ini"', helper_text)
+            self.assertNotIn('$stateFile  = Join-Path $scriptDir "update_state.ini"', update_text)
+            self.assertNotIn('$logFile   = Join-Path $scriptDir "update.log"', helper_text)
+            self.assertNotIn('$logFile    = Join-Path $scriptDir "update.log"', update_text)
+
     def test_generated_ps1_writes_current_step(self):
         """生成的 PS1 状态字段应写 current_step 而不是 step。"""
         with tempfile.TemporaryDirectory() as temp_dir:
-            updater = self.make_updater()
-            updater._generate_helper_ps1(Path(temp_dir))
-            updater._generate_update_ps1(Path(temp_dir))
+            updater, _, paths = self._make_runtime_paths(Path(temp_dir))
+            updater._generate_helper_ps1(paths)
+            updater._generate_update_ps1(paths)
 
-            helper_text = (Path(temp_dir) / "App_Update_Helper.ps1").read_text(encoding="utf-8-sig")
-            update_text = (Path(temp_dir) / "App_Update.ps1").read_text(encoding="utf-8-sig")
+            helper_text = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+            update_text = paths["update_ps1"].read_text(encoding="utf-8-sig")
 
             self.assertIn('Write-IniValue "State" "current_step" $step', helper_text)
             self.assertIn('Write-IniValue "State" "current_step" $step', update_text)
@@ -416,12 +465,12 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
     def test_generated_ps1_has_sha256_fallbacks(self):
         """生成的 PS1 应包含 SHA256 多路径 fallback。"""
         with tempfile.TemporaryDirectory() as temp_dir:
-            updater = self.make_updater()
-            updater._generate_helper_ps1(Path(temp_dir))
-            updater._generate_update_ps1(Path(temp_dir))
+            updater, _, paths = self._make_runtime_paths(Path(temp_dir))
+            updater._generate_helper_ps1(paths)
+            updater._generate_update_ps1(paths)
 
-            helper_text = (Path(temp_dir) / "App_Update_Helper.ps1").read_text(encoding="utf-8-sig")
-            update_text = (Path(temp_dir) / "App_Update.ps1").read_text(encoding="utf-8-sig")
+            helper_text = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+            update_text = paths["update_ps1"].read_text(encoding="utf-8-sig")
             combined_text = helper_text + update_text
 
             self.assertEqual(2, combined_text.count("function Get-SHA256($filePath)"))
@@ -447,12 +496,12 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            updater = self.make_updater()
-            updater._generate_helper_ps1(Path(temp_dir))
-            updater._generate_update_ps1(Path(temp_dir))
+            updater, _, paths = self._make_runtime_paths(Path(temp_dir))
+            updater._generate_helper_ps1(paths)
+            updater._generate_update_ps1(paths)
 
-            helper_text = (Path(temp_dir) / "App_Update_Helper.ps1").read_text(encoding="utf-8-sig")
-            update_text = (Path(temp_dir) / "App_Update.ps1").read_text(encoding="utf-8-sig")
+            helper_text = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+            update_text = paths["update_ps1"].read_text(encoding="utf-8-sig")
 
             for function_name in shared_functions:
                 with self.subTest(script="Helper.ps1", function_name=function_name):
