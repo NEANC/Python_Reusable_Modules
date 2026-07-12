@@ -834,13 +834,14 @@ class SelfUpdater:
         return 0
 
     @staticmethod
-    def _cleanup_update_residue(logger: logging.Logger) -> None:
+    def _cleanup_update_residue(logger: Optional[logging.Logger] = None) -> None:
         """
-        清理上次成功更新后的残留文件
+        按状态文件记录的精确路径清理上次成功更新后的残留文件。
 
         Args:
             logger: 日志记录器
         """
+        logger = logger or logging.getLogger("SelfUpdater")
         state = UpdateState.load()
         if not state:
             return
@@ -850,24 +851,31 @@ class SelfUpdater:
             return
 
         logger.info("清理上次更新残留文件...")
-        target_path = Path(state["target"])
-        script_dir = target_path.parent
-
         cleanup_files = [
-            Path(state["backup_file"]),
-            script_dir / "update_started.lock",
-            script_dir / "update.log",
+            Path(file_path)
+            for file_path in (
+                state["backup_file"],
+                state["new_file"],
+                state["helper_ps1"],
+                state["update_ps1"],
+                state["lock_file"],
+            )
+            if file_path
         ]
-        # 通配删除所有可能的中间产物
-        for pattern in ["*_Update_Helper.ps1", "*_Update.ps1", "*.new.exe", "*.backup.exe"]:
-            for f in script_dir.glob(pattern):
-                cleanup_files.append(f)
 
-        for f in cleanup_files:
+        for file_path in cleanup_files:
             try:
-                if f.exists():
-                    f.unlink()
-                    logger.debug(f"已删除残留文件: {f}")
+                if file_path.exists():
+                    file_path.unlink()
+                    logger.debug(f"已删除残留文件: {file_path}")
+            except OSError:
+                pass
+
+        runtime_dir = Path(state["runtime_dir"]) if state["runtime_dir"] else None
+        if runtime_dir and runtime_dir.exists():
+            try:
+                runtime_dir.rmdir()
+                logger.debug(f"已删除空运行时目录: {runtime_dir}")
             except OSError:
                 pass
 

@@ -386,6 +386,93 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse((program_dir / "App.new.exe").exists())
             self.assertFalse((program_dir / "App_Update_Helper.ps1").exists())
 
+    def test_cleanup_update_residue_uses_verified_state_runtime_paths_only(self):
+        """清理更新残留时应只按 verified 状态文件中的运行时路径删除。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(paths["new_file"])
+            state["backup_file"] = str(paths["backup_file"])
+            state["helper_ps1"] = str(paths["helper_ps1"])
+            state["update_ps1"] = str(paths["update_ps1"])
+            state["lock_file"] = str(paths["lock_file"])
+            state.save()
+            runtime_files = (
+                paths["new_file"],
+                paths["backup_file"],
+                paths["helper_ps1"],
+                paths["update_ps1"],
+                paths["lock_file"],
+            )
+            for runtime_file in runtime_files:
+                runtime_file.write_text("runtime", encoding="utf-8")
+            update_log = program_dir / "update.log"
+            old_residue = program_dir / "App_Update.ps1"
+            unrecorded_update_ps1 = program_dir / "Other_Update.ps1"
+            unrecorded_backup_exe = program_dir / "Other.backup.exe"
+            unknown_runtime_file = runtime_dir / "unknown.tmp"
+            update_log.write_text("log", encoding="utf-8")
+            old_residue.write_text("old residue", encoding="utf-8")
+            unrecorded_update_ps1.write_text("unrecorded ps1", encoding="utf-8")
+            unrecorded_backup_exe.write_text("unrecorded backup", encoding="utf-8")
+            unknown_runtime_file.write_text("unknown", encoding="utf-8")
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
+                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            for runtime_file in runtime_files:
+                self.assertFalse(runtime_file.exists(), runtime_file)
+            self.assertTrue(runtime_dir.exists())
+            self.assertTrue(unknown_runtime_file.exists())
+            self.assertTrue(update_log.exists())
+            self.assertTrue(old_residue.exists())
+            self.assertTrue(unrecorded_update_ps1.exists())
+            self.assertTrue(unrecorded_backup_exe.exists())
+            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
+    def test_cleanup_update_residue_removes_empty_runtime_dir(self):
+        """清理更新残留后应删除已清空的运行时目录。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(paths["new_file"])
+            state["backup_file"] = str(paths["backup_file"])
+            state["helper_ps1"] = str(paths["helper_ps1"])
+            state["update_ps1"] = str(paths["update_ps1"])
+            state["lock_file"] = str(paths["lock_file"])
+            state.save()
+            runtime_files = (
+                paths["new_file"],
+                paths["backup_file"],
+                paths["helper_ps1"],
+                paths["update_ps1"],
+                paths["lock_file"],
+            )
+            for runtime_file in runtime_files:
+                runtime_file.write_text("runtime", encoding="utf-8")
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
+                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            for runtime_file in runtime_files:
+                self.assertFalse(runtime_file.exists(), runtime_file)
+            self.assertFalse(runtime_dir.exists())
+            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
     def test_replace_executable_records_helper_start_failure(self):
         """helper 启动失败时应写入状态文件的 last_error。"""
         with tempfile.TemporaryDirectory() as temp_dir:
