@@ -317,6 +317,57 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIsNotNone(release)
         self.assertEqual("v1.2.0", release["tag_name"])
 
+    def test_replace_executable_records_runtime_paths_in_state(self):
+        """替换准备流程应把运行时文件路径写入状态文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            program_dir = root / "program"
+            temp_folder = root / "self-update"
+            program_dir.mkdir()
+            current_exe = program_dir / "App.exe"
+            current_exe.write_bytes(b"old")
+            tmp_path = root / "downloaded.exe"
+            tmp_path.write_bytes(b"new")
+            sha_path = root / "downloaded.sha256"
+            sha_path.write_text(hashlib.sha256(b"new").hexdigest(), encoding="ascii")
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=str(temp_folder),
+                is_bundled=True,
+                package_type="Nuitka",
+            )
+
+            with patch("self_updater.self_updater.get_exe_path", return_value=current_exe), \
+                    patch("self_updater.self_updater.subprocess.Popen", return_value=FakeExitedProcess()):
+                with self.assertRaises(RuntimeError):
+                    updater._replace_executable(
+                        tmp_path,
+                        sha_path,
+                        "v1.2.0",
+                        "old-sha",
+                        hashlib.sha256(b"new").hexdigest(),
+                    )
+
+            loaded = UpdateState.load(base_dir=program_dir)
+            runtime_dir = temp_folder / "v1.2.0"
+            self.assertIsNotNone(loaded)
+            self.assertEqual(str(runtime_dir), loaded["runtime_dir"])
+            self.assertEqual(str(runtime_dir / "App.new.exe"), loaded["new_file"])
+            self.assertEqual(str(runtime_dir / "App.backup.exe"), loaded["backup_file"])
+            self.assertEqual(str(runtime_dir / "App_Update_Helper.ps1"), loaded["helper_ps1"])
+            self.assertEqual(str(runtime_dir / "App_Update.ps1"), loaded["update_ps1"])
+            self.assertEqual(str(runtime_dir / "update_started.lock"), loaded["lock_file"])
+            self.assertTrue((runtime_dir / "App.new.exe").exists())
+            self.assertTrue((runtime_dir / "App_Update_Helper.ps1").exists())
+            self.assertTrue((runtime_dir / "App_Update.ps1").exists())
+            self.assertFalse((program_dir / "App.new.exe").exists())
+            self.assertFalse((program_dir / "App_Update_Helper.ps1").exists())
+
     def test_replace_executable_records_helper_start_failure(self):
         """helper 启动失败时应写入状态文件的 last_error。"""
         with tempfile.TemporaryDirectory() as temp_dir:

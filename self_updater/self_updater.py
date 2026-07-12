@@ -524,42 +524,44 @@ class SelfUpdater:
             RuntimeError: helper.ps1 启动失败
         """
         current_exe = get_exe_path()
-        base_dir = current_exe.parent
-        new_exe = base_dir / f"{current_exe.stem}.new.exe"
-        backup_exe = base_dir / f"{current_exe.stem}.backup.exe"
+        paths = self._build_update_runtime_paths(current_exe, new_version)
+        paths["runtime_dir"].mkdir(parents=True, exist_ok=True)
 
-        shutil.copy2(tmp_path, new_exe)
-        self.logger.info(f"新版本已暂存: {new_exe}")
+        shutil.copy2(tmp_path, paths["new_file"])
+        self.logger.info(f"新版本已暂存: {paths['new_file']}")
 
-        state = UpdateState(base_dir=base_dir)
+        state = UpdateState(file_path=paths["state_file"])
         state["state"] = "downloaded_verified"
         state["target"] = str(current_exe)
-        state["new_file"] = str(new_exe)
-        state["backup_file"] = str(backup_exe)
+        state["new_file"] = str(paths["new_file"])
+        state["backup_file"] = str(paths["backup_file"])
+        state["runtime_dir"] = str(paths["runtime_dir"])
+        state["helper_ps1"] = str(paths["helper_ps1"])
+        state["update_ps1"] = str(paths["update_ps1"])
+        state["lock_file"] = str(paths["lock_file"])
         state["old_version"] = self.current_version
         state["new_version"] = new_version
         state["old_sha256"] = old_sha256
         state["new_sha256"] = new_sha256
-        state.set("Retry", "retry_count", _get_existing_retry_count(base_dir))
+        state.set("Retry", "retry_count", _get_existing_retry_count(paths["program_dir"]))
         state.set("Retry", "max_retry", "3")
         state.save()
 
-        self._generate_helper_ps1(base_dir)
-        self._generate_update_ps1(base_dir)
-        self.logger.info(f"已生成更新脚本到目录: {base_dir}")
+        self._generate_helper_ps1(paths)
+        self._generate_update_ps1(paths)
+        self.logger.info(f"已生成更新脚本到目录: {paths['runtime_dir']}")
 
         state.transition("helper_started")
 
         self.logger.info("启动更新进程...")
-        lock_file = base_dir / "update_started.lock"
+        lock_file = paths["lock_file"]
         if lock_file.exists():
             lock_file.unlink()
 
-        helper_ps1 = base_dir / f"{self.app_name}_Update_Helper.ps1"
         proc = subprocess.Popen(
             [
                 "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", str(helper_ps1),
+                "-File", str(paths["helper_ps1"]),
                 "-ParentPid", str(os.getpid()),
             ],
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
@@ -588,10 +590,11 @@ class SelfUpdater:
 
     # ── PS1 脚本生成（从 modules/self_updater.py 完整复用） ──
 
-    def _generate_helper_ps1(self, script_dir: Path) -> None:
+    def _generate_helper_ps1(self, script_dir: Path | Dict[str, Path]) -> None:
         """
         生成 {app}_Update_Helper.ps1
         """.format(app=self.app_name)
+        script_path = script_dir["helper_ps1"] if isinstance(script_dir, dict) else None
         ps1_content = textwrap.dedent(r"""
             <#
             .SYNOPSIS
@@ -674,13 +677,15 @@ class SelfUpdater:
             }
         """).lstrip("\n")
 
-        script_path = script_dir / f"{self.app_name}_Update_Helper.ps1"
+        if script_path is None:
+            script_path = script_dir / f"{self.app_name}_Update_Helper.ps1"
         script_path.write_text(ps1_content, encoding='utf-8-sig')
 
-    def _generate_update_ps1(self, script_dir: Path) -> None:
+    def _generate_update_ps1(self, script_dir: Path | Dict[str, Path]) -> None:
         """
         生成 {app}_Update.ps1
         """.format(app=self.app_name)
+        script_path = script_dir["update_ps1"] if isinstance(script_dir, dict) else None
         ps1_content = textwrap.dedent(r"""
             <#
             .SYNOPSIS
@@ -747,7 +752,8 @@ class SelfUpdater:
             }
         """).lstrip("\n")
 
-        script_path = script_dir / f"{self.app_name}_Update.ps1"
+        if script_path is None:
+            script_path = script_dir / f"{self.app_name}_Update.ps1"
         script_path.write_text(ps1_content, encoding='utf-8-sig')
 
     # ── 静态工具方法 ──
