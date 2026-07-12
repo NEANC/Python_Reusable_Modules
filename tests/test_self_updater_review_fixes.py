@@ -217,6 +217,16 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertEqual("", state["current_step"])
             self.assertEqual("", state["level"])
 
+    def test_update_state_defaults_include_runtime_path_fields(self):
+        """状态文件默认字段应包含运行时路径字段。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = UpdateState(base_dir=temp_dir)
+
+            self.assertEqual("", state["runtime_dir"])
+            self.assertEqual("", state["helper_ps1"])
+            self.assertEqual("", state["update_ps1"])
+            self.assertEqual("", state["lock_file"])
+
     def test_preview_channel_selects_highest_valid_release(self):
         """preview 通道应按语义版本选择最高有效 release。"""
         releases = [
