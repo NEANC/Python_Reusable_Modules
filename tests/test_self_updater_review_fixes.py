@@ -386,6 +386,33 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse((program_dir / "App.new.exe").exists())
             self.assertFalse((program_dir / "App_Update_Helper.ps1").exists())
 
+    def test_rollback_restores_backup_from_runtime_dir(self):
+        """回滚应使用状态文件中记录的 runtime_dir 备份文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            backup_file = runtime_dir / "App.backup.exe"
+            current_exe.write_bytes(b"current-version")
+            backup_file.write_bytes(b"backup-version")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "rollback"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["backup_file"] = str(backup_file)
+            state.save()
+
+            with patch("self_updater.self_config.sys.argv", [str(current_exe)]):
+                result = updater.rollback(logging.getLogger("SelfUpdaterTest"))
+
+            loaded = UpdateState.load(base_dir=program_dir)
+            self.assertTrue(result)
+            self.assertEqual(b"backup-version", current_exe.read_bytes())
+            self.assertFalse(backup_file.exists())
+            self.assertIsNotNone(loaded)
+            self.assertEqual("rollback_done", loaded["state"])
+
     def test_cleanup_update_residue_uses_verified_state_runtime_paths_only(self):
         """清理更新残留时应只按 verified 状态文件中的运行时路径删除。"""
         with tempfile.TemporaryDirectory() as temp_dir:
