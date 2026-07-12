@@ -95,8 +95,8 @@ class SelfUpdater:
         self.app_name = app_name
         self.current_version = current_version
         self.proxy = proxy
-        self.temp_folder = self._resolve_temp_folder(temp_folder)
         self.logger = logger
+        self.temp_folder = self._resolve_temp_folder(temp_folder)
         self._download_func = download_func or self._default_download
         self.self_update_channel = self_update_channel
         self._is_bundled = is_bundled
@@ -121,15 +121,21 @@ class SelfUpdater:
             )
 
     def _resolve_temp_folder(self, temp_folder: Optional[str]) -> str:
-        """解析临时文件夹路径，若未指定则优先使用系统缓存目录，其次脚本目录"""
+        """解析自更新临时目录，优先使用 LOCALAPPDATA，失败时回退程序目录。"""
         if temp_folder:
             return temp_folder
-        # 优先使用系统 Temp 目录，以 app_name 命名子文件夹避免污染
-        sys_temp = os.environ.get('TEMP') or os.environ.get('TMP')
-        if sys_temp:
-            return os.path.join(sys_temp, self.app_name)
-        # 回退到脚本所在目录下的 TEMP 子文件夹，避免污染脚本目录
-        return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "TEMP")
+
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            local_dir = Path(local_appdata) / self.app_name / "SelfUpdate"
+            try:
+                local_dir.mkdir(parents=True, exist_ok=True)
+                return str(local_dir)
+            except OSError as e:
+                self.logger.warning(f"创建 LOCALAPPDATA 自更新目录失败，将回退程序目录: {e}")
+
+        program_dir = Path(sys.argv[0]).resolve().parent
+        return str(program_dir / "SelfUpdate")
 
     def _default_download(self, url: str, save_path: str) -> bool:
         """内置下载实现（无进度条），外部可注入带进度的下载函数覆盖"""

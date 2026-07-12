@@ -64,6 +64,46 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             package_type="Nuitka",
         )
 
+    def test_resolve_temp_folder_uses_localappdata_selfupdate_by_default(self):
+        """未传 temp_folder 时应默认使用 LOCALAPPDATA 下的应用自更新目录。"""
+        with patch.dict("os.environ", {"LOCALAPPDATA": r"C:\Users\User\AppData\Local"}, clear=True):
+            with patch("pathlib.Path.mkdir"):
+                updater = self.make_updater(app_name="App")
+
+        self.assertEqual(
+            str(Path(r"C:\Users\User\AppData\Local") / "App" / "SelfUpdate"),
+            updater.temp_folder,
+        )
+
+    def test_resolve_temp_folder_keeps_explicit_value(self):
+        """传入 temp_folder 时应直接使用调用方指定目录。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+            )
+
+        self.assertEqual(temp_dir, updater.temp_folder)
+
+    def test_resolve_temp_folder_falls_back_to_program_selfupdate(self):
+        """LOCALAPPDATA 不可用或创建失败时应回退到程序目录 SelfUpdate。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            program_path = Path(temp_dir) / "App.exe"
+            mkdir_error = OSError("cannot create local appdata")
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("self_updater.self_updater.sys.argv", [str(program_path)]):
+                    with patch("pathlib.Path.mkdir", side_effect=mkdir_error):
+                        updater = self.make_updater(app_name="App")
+
+            self.assertEqual(str(Path(temp_dir) / "SelfUpdate"), updater.temp_folder)
+
     def _assert_sha256_fallbacks(self, content, script_name):
         """断言生成脚本包含 SHA256 多路径回退。"""
         self.assertIn("function Get-SHA256($filePath)", content, script_name)
