@@ -851,6 +851,14 @@ class SelfUpdater:
             return
 
         logger.info("清理上次更新残留文件...")
+        runtime_dir = Path(state["runtime_dir"]) if state["runtime_dir"] else None
+        resolved_runtime_dir = None
+        if runtime_dir:
+            try:
+                resolved_runtime_dir = runtime_dir.resolve()
+            except OSError as e:
+                logger.warning(f"解析运行时目录失败，将跳过残留文件清理: {e}")
+
         cleanup_files = [
             Path(file_path)
             for file_path in (
@@ -865,13 +873,21 @@ class SelfUpdater:
 
         for file_path in cleanup_files:
             try:
-                if file_path.exists():
-                    file_path.unlink()
-                    logger.debug(f"已删除残留文件: {file_path}")
-            except OSError:
-                pass
+                if not resolved_runtime_dir:
+                    logger.warning(f"跳过运行时目录外的残留文件: {file_path}")
+                    continue
+                resolved_file_path = file_path.resolve()
+                try:
+                    resolved_file_path.relative_to(resolved_runtime_dir)
+                except ValueError:
+                    logger.warning(f"跳过运行时目录外的残留文件: {file_path}")
+                    continue
+                if resolved_file_path.exists():
+                    resolved_file_path.unlink()
+                    logger.debug(f"已删除残留文件: {resolved_file_path}")
+            except OSError as e:
+                logger.warning(f"清理残留文件失败，已跳过: {file_path}, {e}")
 
-        runtime_dir = Path(state["runtime_dir"]) if state["runtime_dir"] else None
         if runtime_dir and runtime_dir.exists():
             try:
                 runtime_dir.rmdir()

@@ -464,6 +464,33 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(unrecorded_backup_exe.exists())
             self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
 
+    def test_cleanup_update_residue_skips_files_outside_runtime_dir(self):
+        """清理更新残留时不应删除 runtime_dir 外部的记录路径。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            important_file = program_dir / "important.txt"
+            runtime_file = runtime_dir / "App.new.exe"
+            important_file.write_text("important", encoding="utf-8")
+            runtime_file.write_text("runtime", encoding="utf-8")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(important_file)
+            state["backup_file"] = str(runtime_file)
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
+                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(important_file.exists())
+            self.assertFalse(runtime_file.exists())
+            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
     def test_cleanup_update_residue_removes_empty_runtime_dir(self):
         """清理更新残留后应删除已清空的运行时目录。"""
         with tempfile.TemporaryDirectory() as temp_dir:
