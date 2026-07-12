@@ -137,6 +137,29 @@ class SelfUpdater:
         program_dir = Path(sys.argv[0]).resolve().parent
         return str(program_dir / "SelfUpdate")
 
+    def _resolve_runtime_dir(self, new_version: str) -> Path:
+        """解析本次更新运行时目录。"""
+        return Path(self.temp_folder) / new_version
+
+    def _build_update_runtime_paths(self, current_exe: Path,
+                                    new_version: str) -> Dict[str, Path]:
+        """构建本次更新涉及的运行时路径。"""
+        program_dir = current_exe.parent
+        temp_folder = Path(self.temp_folder)
+        runtime_dir = self._resolve_runtime_dir(new_version)
+        return {
+            "program_dir": program_dir,
+            "state_file": program_dir / UpdateState.STATE_FILE_NAME,
+            "log_file": program_dir / "update.log",
+            "temp_folder": temp_folder,
+            "runtime_dir": runtime_dir,
+            "helper_ps1": runtime_dir / f"{self.app_name}_Update_Helper.ps1",
+            "update_ps1": runtime_dir / f"{self.app_name}_Update.ps1",
+            "lock_file": runtime_dir / "update_started.lock",
+            "new_file": runtime_dir / f"{current_exe.stem}.new.exe",
+            "backup_file": runtime_dir / f"{current_exe.stem}.backup.exe",
+        }
+
     def _default_download(self, url: str, save_path: str) -> bool:
         """内置下载实现（无进度条），外部可注入带进度的下载函数覆盖"""
         try:

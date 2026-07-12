@@ -92,6 +92,40 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
         self.assertEqual(temp_dir, updater.temp_folder)
 
+    def test_build_update_runtime_paths_separates_program_and_runtime_files(self):
+        """运行时路径 helper 应区分程序目录文件和 runtime_dir 文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            program_dir = root / "program"
+            temp_folder = root / "self-update"
+            program_dir.mkdir()
+            current_exe = program_dir / "App.exe"
+            current_exe.write_bytes(b"old")
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=str(temp_folder),
+                is_bundled=True,
+                package_type="Nuitka",
+            )
+
+            paths = updater._build_update_runtime_paths(current_exe, "v1.2.0")
+
+            self.assertEqual(program_dir, paths["program_dir"])
+            self.assertEqual(program_dir / "update_state.ini", paths["state_file"])
+            self.assertEqual(program_dir / "update.log", paths["log_file"])
+            self.assertEqual(temp_folder, paths["temp_folder"])
+            self.assertEqual(temp_folder / "v1.2.0", paths["runtime_dir"])
+            self.assertEqual(temp_folder / "v1.2.0" / "App_Update_Helper.ps1", paths["helper_ps1"])
+            self.assertEqual(temp_folder / "v1.2.0" / "App_Update.ps1", paths["update_ps1"])
+            self.assertEqual(temp_folder / "v1.2.0" / "update_started.lock", paths["lock_file"])
+            self.assertEqual(temp_folder / "v1.2.0" / "App.new.exe", paths["new_file"])
+            self.assertEqual(temp_folder / "v1.2.0" / "App.backup.exe", paths["backup_file"])
+
     def test_resolve_temp_folder_falls_back_to_program_selfupdate(self):
         """LOCALAPPDATA 不可用或创建失败时应回退到程序目录 SelfUpdate。"""
         with tempfile.TemporaryDirectory() as temp_dir:
