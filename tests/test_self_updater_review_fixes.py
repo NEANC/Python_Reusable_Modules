@@ -67,6 +67,18 @@ class FakePypdl:
         return []
 
 
+class FakeFailingPypdl:
+    """用于模拟 PYPDL 下载失败。"""
+
+    def __init__(self, *args, **kwargs):
+        """忽略初始化参数。"""
+        return None
+
+    def start(self, **kwargs):
+        """模拟下载失败。"""
+        raise RuntimeError("pypdl failed")
+
+
 class SelfUpdaterReviewFixesTest(unittest.TestCase):
     """覆盖代码审查反馈中的关键修复项。"""
 
@@ -794,6 +806,48 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertEqual([("https://example.invalid/App.exe", str(save_path))], calls)
             self.assertEqual(b"custom", save_path.read_bytes())
             pypdl_download.assert_not_called()
+
+
+    def test_default_download_returns_false_when_pypdl_fails(self):
+        """PYPDL 失败时默认下载应返回 False。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = self.make_updater(temp_folder=temp_dir)
+
+            with patch.dict("sys.modules", {"pypdl": Mock(Pypdl=FakeFailingPypdl)}):
+                result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+
+            self.assertFalse(result)
+            self.assertFalse(save_path.exists())
+
+    def test_download_and_verify_still_checks_sha256_after_pypdl_download(self):
+        """PYPDL 下载成功后仍应由现有流程执行 SHA256 校验。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tmp_path = root / "App.exe"
+            sha_path = root / "App.sha256"
+            expected_sha256 = hashlib.sha256(b"expected").hexdigest()
+            sha_path.write_text(expected_sha256, encoding="ascii")
+            updater = self.make_updater(temp_folder=temp_dir)
+
+            def fake_download(url, save_path):
+                """写入错误内容，触发 SHA256 校验失败。"""
+                Path(save_path).write_bytes(b"wrong")
+                return True
+
+            updater._download_func = fake_download
+
+            result = updater._download_and_verify(
+                tmp_path,
+                sha_path,
+                "https://example.invalid/App.exe",
+                expected_sha256,
+                "v1.2.0",
+            )
+
+            self.assertFalse(result)
+            self.assertFalse(tmp_path.exists())
+            self.assertFalse(sha_path.exists())
 
 
 if __name__ == "__main__":
