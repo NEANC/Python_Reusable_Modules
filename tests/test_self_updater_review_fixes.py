@@ -849,5 +849,22 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(sha_path.exists())
 
 
+    def test_github_release_api_still_uses_requests_not_pypdl(self):
+        """GitHub Release API 查询应继续使用 requests，不走 PYPDL。"""
+        releases = [
+            {"draft": False, "tag_name": "v1.2.0", "assets": []},
+        ]
+        updater = self.make_updater(current_version="v1.0.0")
+
+        with patch("self_updater.self_updater.requests.get", return_value=FakeResponse(releases)) as get:
+            with patch.object(updater, "_download_with_pypdl") as pypdl_download:
+                release = updater._fetch_latest_release()
+
+        self.assertIsNotNone(release)
+        self.assertEqual("v1.2.0", release["tag_name"])
+        get.assert_called_once()
+        pypdl_download.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
