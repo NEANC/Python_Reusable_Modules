@@ -759,6 +759,42 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(call["block"])
             self.assertTrue(call["overwrite"])
 
+    def test_custom_download_func_bypasses_pypdl_options(self):
+        """传入 download_func 时应完全绕过默认 PYPDL 下载。"""
+        calls = []
+
+        def custom_download(url, save_path):
+            """模拟调用方自定义下载函数。"""
+            calls.append((url, save_path))
+            Path(save_path).write_bytes(b"custom")
+            return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="socks5://127.0.0.1:1080",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                download_func=custom_download,
+                is_bundled=True,
+                package_type="Nuitka",
+                download_segments=8,
+                download_retries=4,
+                download_timeout=90,
+            )
+
+            with patch.object(updater, "_download_with_pypdl") as pypdl_download:
+                result = updater._download_func("https://example.invalid/App.exe", str(save_path))
+
+            self.assertTrue(result)
+            self.assertEqual([("https://example.invalid/App.exe", str(save_path))], calls)
+            self.assertEqual(b"custom", save_path.read_bytes())
+            pypdl_download.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
