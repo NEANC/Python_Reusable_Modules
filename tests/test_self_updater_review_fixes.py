@@ -876,8 +876,8 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(result)
             requests_download.assert_not_called()
 
-    def test_custom_download_func_bypasses_pypdl_options(self):
-        """传入 download_func 时应完全绕过默认 PYPDL 下载。"""
+    def test_custom_download_func_bypasses_builtin_backends(self):
+        """传入 download_func 时应完全绕过所有内置下载后端。"""
         calls = []
 
         def custom_download(url, save_path):
@@ -899,34 +899,50 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 download_func=custom_download,
                 is_bundled=True,
                 package_type="Nuitka",
+                download_backend="pypdl",
                 download_segments=8,
                 download_retries=4,
                 download_timeout=90,
             )
 
             with patch.object(updater, "_download_with_pypdl") as pypdl_download:
-                result = updater._download_func("https://example.invalid/App.exe", str(save_path))
+                with patch.object(updater, "_download_with_requests") as requests_download:
+                    result = updater._download_func("https://example.invalid/App.exe", str(save_path))
 
             self.assertTrue(result)
             self.assertEqual([("https://example.invalid/App.exe", str(save_path))], calls)
             self.assertEqual(b"custom", save_path.read_bytes())
             pypdl_download.assert_not_called()
+            requests_download.assert_not_called()
 
 
-    def test_default_download_returns_false_when_pypdl_fails(self):
-        """PYPDL 失败时默认下载应返回 False。"""
+    def test_pypdl_backend_returns_false_when_pypdl_runtime_fails(self):
+        """PYPDL 运行时失败应返回 False，不回退到单线程。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             save_path = Path(temp_dir) / "App.exe"
-            updater = self.make_updater(temp_folder=temp_dir)
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+                download_backend="pypdl",
+            )
 
             with patch.dict("sys.modules", {"pypdl": Mock(Pypdl=FakeFailingPypdl)}):
-                result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+                with patch.object(updater, "_download_with_requests") as requests_download:
+                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
 
             self.assertFalse(result)
             self.assertFalse(save_path.exists())
+            requests_download.assert_not_called()
 
-    def test_download_and_verify_still_checks_sha256_after_pypdl_download(self):
-        """PYPDL 下载成功后仍应由现有流程执行 SHA256 校验。"""
+    def test_download_and_verify_still_checks_sha256_after_download(self):
+        """下载成功后仍应由现有流程执行 SHA256 校验。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             tmp_path = root / "App.exe"
