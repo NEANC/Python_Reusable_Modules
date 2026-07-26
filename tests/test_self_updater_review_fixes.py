@@ -788,8 +788,8 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertNotIn("return  # 或 sys.exit(1)", text)
 
 
-    def test_default_download_uses_pypdl_with_options_and_proxy(self):
-        """默认下载应使用 PYPDL，并传入下载参数和代理。"""
+    def test_pypdl_backend_uses_pypdl_with_options_and_proxy(self):
+        """显式选择 PYPDL 后端时应使用 PYPDL，并传入下载参数和代理。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             FakePypdl.instances.clear()
             save_path = Path(temp_dir) / "App.exe"
@@ -803,6 +803,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 temp_folder=temp_dir,
                 is_bundled=True,
                 package_type="Nuitka",
+                download_backend="pypdl",
                 download_segments=8,
                 download_retries=4,
                 download_timeout=90,
@@ -824,6 +825,56 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(call["display"])
             self.assertTrue(call["block"])
             self.assertTrue(call["overwrite"])
+
+    def test_pypdl_backend_falls_back_to_single_when_pypdl_is_missing(self):
+        """选择 PYPDL 但缺少 pypdl 模块时应回退到单线程下载。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+                download_backend="pypdl",
+            )
+            response = FakeResponse(b"fallback")
+
+            with patch("self_updater.self_updater.requests.get", return_value=response) as get:
+                with patch.object(updater, "_download_with_pypdl", side_effect=ModuleNotFoundError("No module named 'pypdl'", name="pypdl")):
+                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+
+            self.assertTrue(result)
+            self.assertEqual(b"fallback", save_path.read_bytes())
+            get.assert_called_once()
+
+    def test_pypdl_backend_does_not_fallback_for_internal_import_error(self):
+        """PYPDL 内部依赖异常不应被误判为 pypdl 缺失。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+                download_backend="pypdl",
+            )
+
+            with patch.object(updater, "_download_with_pypdl", side_effect=ModuleNotFoundError("No module named 'aiohttp'", name="aiohttp")):
+                with patch.object(updater, "_download_with_requests") as requests_download:
+                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+
+            self.assertFalse(result)
+            requests_download.assert_not_called()
 
     def test_custom_download_func_bypasses_pypdl_options(self):
         """传入 download_func 时应完全绕过默认 PYPDL 下载。"""

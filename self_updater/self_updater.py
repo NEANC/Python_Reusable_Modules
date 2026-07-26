@@ -189,7 +189,13 @@ class SelfUpdater:
             if self.download_backend == "single":
                 self._download_with_requests(url, save_path)
             else:
-                self._download_with_pypdl(url, save_path)
+                try:
+                    self._download_with_pypdl(url, save_path)
+                except ModuleNotFoundError as e:
+                    if e.name != "pypdl":
+                        raise
+                    self.logger.warning("未安装 pypdl，回退到内置单线程下载")
+                    self._download_with_requests(url, save_path)
             return True
         except Exception as e:
             self.logger.error(f"下载失败: {type(e).__name__}: {e}")
