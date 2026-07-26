@@ -70,6 +70,9 @@ class SelfUpdater:
                  logger: logging.Logger,
                  temp_folder: Optional[str] = None,
                  download_func: Optional[Callable[[str, str], bool]] = None,
+                 download_segments: int = 5,
+                 download_retries: int = 3,
+                 download_timeout: int = 120,
                  self_update_channel: str = 'preview',
                  is_bundled: Optional[bool] = None,
                  package_type: Optional[str] = None):
@@ -82,9 +85,12 @@ class SelfUpdater:
             app_name: 应用名称（用于 PS1 脚本和缓存目录命名）
             current_version: 当前版本号（如 v1.0.0）
             proxy: 代理地址（空字符串表示无代理）
-            temp_folder: 临时文件夹路径，不传则自动解析（系统缓存 > 脚本目录）
+            temp_folder: 基础运行时目录；不传则默认使用 LOCALAPPDATA，失败时回退程序目录
             logger: 日志记录器
-            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 requests 下载
+            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 PYPDL 下载
+            download_segments: PYPDL 分段下载数量
+            download_retries: PYPDL 单次下载内部重试次数
+            download_timeout: PYPDL 下载超时时间，单位为秒
             self_update_channel: 更新通道 ('preview', 'stable')
             is_bundled: 外部预检测的是否为打包程序（可选）
             package_type: 外部预检测的打包方式（可选）
@@ -97,6 +103,9 @@ class SelfUpdater:
         self.proxy = proxy
         self.logger = logger
         self.temp_folder = self._resolve_temp_folder(temp_folder)
+        self.download_segments = download_segments
+        self.download_retries = download_retries
+        self.download_timeout = download_timeout
         self._download_func = download_func or self._default_download
         self.self_update_channel = self_update_channel
         self._is_bundled = is_bundled

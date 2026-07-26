@@ -110,6 +110,27 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
         self.assertEqual(temp_dir, updater.temp_folder)
 
+    def test_init_stores_pypdl_download_options(self):
+        """初始化时应保存 PYPDL 下载参数。"""
+        updater = SelfUpdater(
+            github_repo="owner/repo",
+            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+            app_name="App",
+            current_version="v1.0.0",
+            proxy="socks5://127.0.0.1:1080",
+            logger=logging.getLogger("SelfUpdaterTest"),
+            temp_folder="C:/Temp/App",
+            is_bundled=True,
+            package_type="Nuitka",
+            download_segments=8,
+            download_retries=4,
+            download_timeout=90,
+        )
+
+        self.assertEqual(8, updater.download_segments)
+        self.assertEqual(4, updater.download_retries)
+        self.assertEqual(90, updater.download_timeout)
+
     def test_build_update_runtime_paths_separates_program_and_runtime_files(self):
         """运行时路径 helper 应区分程序目录文件和 runtime_dir 文件。"""
         with tempfile.TemporaryDirectory() as temp_dir:
