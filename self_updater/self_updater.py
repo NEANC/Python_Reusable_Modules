@@ -64,12 +64,14 @@ class SelfUpdater:
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     }
+    _DOWNLOAD_BACKENDS = {"single", "pypdl"}
 
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
                  current_version: str, proxy: str,
                  logger: logging.Logger,
                  temp_folder: Optional[str] = None,
                  download_func: Optional[Callable[[str, str], bool]] = None,
+                 download_backend: str = "single",
                  download_segments: int = 5,
                  download_retries: int = 3,
                  download_timeout: int = 120,
@@ -87,15 +89,17 @@ class SelfUpdater:
             proxy: 代理地址（空字符串表示无代理）
             temp_folder: 基础运行时目录；不传则默认使用 LOCALAPPDATA，失败时回退程序目录
             logger: 日志记录器
-            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 PYPDL 下载
-            download_segments: PYPDL 分段下载数量
-            download_retries: PYPDL 单次下载内部重试次数
-            download_timeout: PYPDL 下载超时时间，单位为秒
+            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置下载后端
+            download_backend: 内置下载后端，支持 "single" 和 "pypdl"
+            download_segments: PYPDL 分段下载数量，仅 PYPDL 后端生效
+            download_retries: PYPDL 单次下载内部重试次数，仅 PYPDL 后端生效
+            download_timeout: 下载超时时间，单位为秒
             self_update_channel: 更新通道 ('preview', 'stable')
             is_bundled: 外部预检测的是否为打包程序（可选）
             package_type: 外部预检测的打包方式（可选）
         """
         self._validate_app_name(app_name)
+        self._validate_download_backend(download_backend)
         self.github_repo = github_repo
         self.asset_regex = re.compile(asset_pattern)
         self.app_name = app_name
@@ -103,6 +107,7 @@ class SelfUpdater:
         self.proxy = proxy
         self.logger = logger
         self.temp_folder = self._resolve_temp_folder(temp_folder)
+        self.download_backend = download_backend
         self.download_segments = download_segments
         self.download_retries = download_retries
         self.download_timeout = download_timeout
@@ -127,6 +132,14 @@ class SelfUpdater:
             raise ValueError(
                 "app_name 只能包含英文字母、数字、下划线、点和连字符，"
                 "且不能为纯点号、首尾点号或 Windows 保留设备名"
+            )
+
+    @classmethod
+    def _validate_download_backend(cls, download_backend: str) -> None:
+        """校验内置下载后端名称。"""
+        if download_backend not in cls._DOWNLOAD_BACKENDS:
+            raise ValueError(
+                "download_backend 只能是 'single' 或 'pypdl'"
             )
 
     def _resolve_temp_folder(self, temp_folder: Optional[str]) -> str:

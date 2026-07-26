@@ -161,6 +161,53 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertEqual(4, updater.download_retries)
         self.assertEqual(90, updater.download_timeout)
 
+    def test_init_stores_download_backend_default_and_custom_value(self):
+        """初始化时应保存下载后端，默认使用内置单线程。"""
+        default_updater = SelfUpdater(
+            github_repo="owner/repo",
+            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+            app_name="App",
+            current_version="v1.0.0",
+            proxy="",
+            logger=logging.getLogger("SelfUpdaterTest"),
+            temp_folder="C:/Temp/App",
+            is_bundled=True,
+            package_type="Nuitka",
+        )
+        pypdl_updater = SelfUpdater(
+            github_repo="owner/repo",
+            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+            app_name="App",
+            current_version="v1.0.0",
+            proxy="",
+            logger=logging.getLogger("SelfUpdaterTest"),
+            temp_folder="C:/Temp/App",
+            is_bundled=True,
+            package_type="Nuitka",
+            download_backend="pypdl",
+        )
+
+        self.assertEqual("single", default_updater.download_backend)
+        self.assertEqual("pypdl", pypdl_updater.download_backend)
+
+    def test_init_rejects_unknown_download_backend(self):
+        """未知下载后端应在初始化阶段失败。"""
+        with self.assertRaises(ValueError) as ctx:
+            SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder="C:/Temp/App",
+                is_bundled=True,
+                package_type="Nuitka",
+                download_backend="auto",
+            )
+
+        self.assertIn("download_backend", str(ctx.exception))
+
     def test_build_update_runtime_paths_separates_program_and_runtime_files(self):
         """运行时路径 helper 应区分程序目录文件和 runtime_dir 文件。"""
         with tempfile.TemporaryDirectory() as temp_dir:
