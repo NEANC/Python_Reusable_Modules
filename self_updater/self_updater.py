@@ -93,7 +93,7 @@ class SelfUpdater:
             download_backend: 内置下载后端，支持 "single" 和 "pypdl"
             download_segments: PYPDL 分段下载数量，仅 PYPDL 后端生效
             download_retries: PYPDL 单次下载内部重试次数，仅 PYPDL 后端生效
-            download_timeout: 下载超时时间，单位为秒
+            download_timeout: 下载超时时间，单位为秒，仅 PYPDL 后端生效
             self_update_channel: 更新通道 ('preview', 'stable')
             is_bundled: 外部预检测的是否为打包程序（可选）
             package_type: 外部预检测的打包方式（可选）
@@ -184,37 +184,40 @@ class SelfUpdater:
 
     def _default_download(self, url: str, save_path: str) -> bool:
         """内置默认下载实现，根据 download_backend 选择下载方式。"""
+        if self.download_backend == "single":
+            return self._download_with_requests(url, save_path)
+
         try:
             Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            if self.download_backend == "single":
-                self._download_with_requests(url, save_path)
-            else:
-                try:
-                    self._download_with_pypdl(url, save_path)
-                except ModuleNotFoundError as e:
-                    if e.name != "pypdl":
-                        raise
-                    self.logger.warning("未安装 pypdl，回退到内置单线程下载")
-                    self._download_with_requests(url, save_path)
+            self._download_with_pypdl(url, save_path)
             return True
+        except ModuleNotFoundError as e:
+            if e.name != "pypdl":
+                self.logger.error(f"下载失败: {type(e).__name__}: {e}")
+                return False
+            self.logger.warning("未安装 pypdl，回退到内置单线程下载")
+            return self._download_with_requests(url, save_path)
         except Exception as e:
             self.logger.error(f"下载失败: {type(e).__name__}: {e}")
             return False
 
-    def _download_with_requests(self, url: str, save_path: str) -> None:
+    def _download_with_requests(self, url: str, save_path: str) -> bool:
         """使用 requests 执行内置单线程分块下载。"""
-        response = requests.get(
-            url,
-            headers=self._make_headers(),
-            proxies=self._make_proxies(),
-            timeout=self.download_timeout,
-            stream=True,
-        )
-        response.raise_for_status()
-        with open(save_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=1048576):
-                if chunk:
-                    f.write(chunk)
+        try:
+            headers = {'User-Agent': 'SelfUpdater'}
+            proxies = {'http': self.proxy, 'https': self.proxy} if self.proxy else None
+            response = requests.get(url, headers=headers, proxies=proxies,
+                                    timeout=120, stream=True)
+            response.raise_for_status()
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1048576):
+                    if chunk:
+                        f.write(chunk)
+            return True
+        except requests.RequestException as e:
+            self.logger.error(f"下载失败: {e}")
+            return False
 
     def _download_with_pypdl(self, url: str, save_path: str) -> None:
         """调用 PYPDL 执行阻塞式文件下载。"""

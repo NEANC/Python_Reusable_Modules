@@ -76,7 +76,7 @@ updater = SelfUpdater(
     download_backend="single",                                      # 默认内置单线程下载，不依赖 pypdl
     download_segments=5,                                             # PYPDL 分段下载数量（仅 PYPDL 后端生效）
     download_retries=3,                                              # PYPDL 内部重试次数（仅 PYPDL 后端生效）
-    download_timeout=120,                                            # 下载超时时间（秒）
+    download_timeout=120,                                            # 下载超时时间（秒，仅 PYPDL 后端生效）
     temp_folder=temp_folder,                                          # 可选：基础运行时目录（不传则自动解析）
     logger=logger,
     self_update_channel="preview",                                    # "preview" 或 "stable"
@@ -94,7 +94,7 @@ if need_exit:
     sys.exit(0)  # 退出程序，由 PowerShell 接管完成替换
 ```
 
-如需使用 PYPDL 多线程下载，设置 `download_backend="pypdl"` 并安装 `pypdl`。如果未安装 `pypdl`，程序会自动回退到内置单线程下载。
+如需使用 PYPDL 多线程下载，设置 `download_backend="pypdl"` 并安装 `pypdl`。如果未安装 `pypdl`，程序会自动回退到内置单线程下载。`download_timeout` 仅对 PYPDL 后端生效；默认内置 single 单线程下载固定使用 120 秒超时。
 
 ### 与 argparse 集成
 
@@ -215,7 +215,7 @@ SelfUpdater._cleanup_update_residue(logger)
 | `download_backend`   | `str`                | 否   | 内置下载后端（`single` / `pypdl`），默认 `single`       |
 | `download_segments`  | `int`                | 否   | PYPDL 分段下载数量，默认 `5`                            |
 | `download_retries`   | `int`                | 否   | PYPDL 单次下载内部重试次数，默认 `3`                    |
-| `download_timeout`   | `int`                | 否   | 下载超时时间（秒），默认 `120`。精确语义以对应后端库 API 为准 |
+| `download_timeout`   | `int`                | 否   | 下载超时时间（秒），默认 `120`，仅 PYPDL 后端生效 |
 | `download_func`      | `(str, str) -> bool` | 否   | 自定义下载函数；传入后完全覆盖所有内置下载后端          |
 | `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认，兼容旧值 `"release"`）或 `"stable"`（兼容旧值 `"latest"`） |
 | `is_bundled`          | `bool`               | 否   | 预检测的打包标记，避免重复调用 `detect_package_type()`  |

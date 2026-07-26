@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import Mock
 from unittest.mock import patch
 
+import requests
+
 from self_updater import ps1_fragments
 from self_updater.self_config import UpdateState
 from self_updater.self_updater import SelfUpdater
@@ -24,6 +26,7 @@ class FakeResponse:
         """初始化模拟响应。"""
         self._payload = payload
         self.status_code = status_code
+        self.raise_called = False
 
     def json(self):
         """返回预设的 JSON 数据。"""
@@ -39,7 +42,20 @@ class FakeResponse:
 
     def raise_for_status(self):
         """模拟成功响应。"""
+        self.raise_called = True
         return None
+
+
+class FakeRequestFailureResponse:
+    """用于模拟 raise_for_status 失败的响应对象。"""
+
+    def iter_content(self, chunk_size=1048576):
+        """失败场景下不返回任何分块。"""
+        return iter(())
+
+    def raise_for_status(self):
+        """抛出 requests 请求异常。"""
+        raise requests.RequestException("boom")
 
 
 class FakeExitedProcess:
@@ -803,6 +819,8 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("SOCKS", text)
         self.assertIn("GitHub Release API", text)
         self.assertIn("download_func", text)
+        self.assertIn("仅 PYPDL 后端生效", text)
+        self.assertNotIn("single 使用 download_timeout", text)
 
     def test_pypdl_backend_uses_pypdl_with_options_and_proxy(self):
         """显式选择 PYPDL 后端时应使用 PYPDL，并传入下载参数和代理。"""
@@ -956,6 +974,92 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(result)
             self.assertFalse(save_path.exists())
             requests_download.assert_not_called()
+
+    def test_download_with_requests_restores_single_backend_baseline_semantics(self):
+        """单线程下载应恢复旧版固定请求参数与成功后建目录语义。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "nested" / "App.exe"
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="socks5://127.0.0.1:1080",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+                download_timeout=90,
+            )
+            response = FakeResponse(b"downloaded")
+            mkdir_called_after_raise = []
+
+            def mkdir_side_effect(path_obj, *args, **kwargs):
+                """记录 mkdir 调用时机并执行真实创建。"""
+                mkdir_called_after_raise.append(response.raise_called)
+                return original_mkdir(path_obj, *args, **kwargs)
+
+            original_mkdir = Path.mkdir
+            with patch.object(Path, "mkdir", autospec=True, side_effect=mkdir_side_effect) as mkdir:
+                with patch("self_updater.self_updater.requests.get", return_value=response) as get:
+                    result = updater._download_with_requests("https://example.invalid/App.exe", str(save_path))
+
+            self.assertTrue(result)
+            self.assertEqual(b"downloaded", save_path.read_bytes())
+            get.assert_called_once_with(
+                "https://example.invalid/App.exe",
+                headers={"User-Agent": "SelfUpdater"},
+                proxies={"http": "socks5://127.0.0.1:1080", "https": "socks5://127.0.0.1:1080"},
+                timeout=120,
+                stream=True,
+            )
+            mkdir.assert_called_once_with(save_path.parent, parents=True, exist_ok=True)
+            self.assertEqual([True], mkdir_called_after_raise)
+
+    def test_download_with_requests_uses_none_proxies_when_proxy_is_empty(self):
+        """单线程下载在未配置代理时应传入 None。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = self.make_updater(temp_folder=temp_dir)
+            response = FakeResponse(b"downloaded")
+
+            with patch("self_updater.self_updater.requests.get", return_value=response) as get:
+                result = updater._download_with_requests("https://example.invalid/App.exe", str(save_path))
+
+        self.assertTrue(result)
+        self.assertEqual(None, get.call_args.kwargs["proxies"])
+        self.assertEqual(120, get.call_args.kwargs["timeout"])
+
+    def test_download_with_requests_returns_false_for_request_exception_without_creating_directory(self):
+        """单线程下载遇到 requests.RequestException 时应返回 False，且不提前建目录。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "nested" / "App.exe"
+            updater = self.make_updater(temp_folder=temp_dir)
+
+            with patch("pathlib.Path.mkdir") as mkdir:
+                with patch(
+                    "self_updater.self_updater.requests.get",
+                    return_value=FakeRequestFailureResponse(),
+                ):
+                    result = updater._download_with_requests("https://example.invalid/App.exe", str(save_path))
+
+        self.assertFalse(result)
+        mkdir.assert_not_called()
+        self.assertFalse(save_path.exists())
+
+    def test_default_download_single_backend_directly_returns_requests_backend_result(self):
+        """single 分支应直接返回 requests 后端结果，不进入 PYPDL 回退逻辑。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = self.make_updater(temp_folder=temp_dir)
+
+            with patch.object(updater, "_download_with_requests", return_value=False) as requests_download:
+                with patch.object(updater, "_download_with_pypdl") as pypdl_download:
+                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+
+        self.assertFalse(result)
+        requests_download.assert_called_once_with("https://example.invalid/App.exe", str(save_path))
+        pypdl_download.assert_not_called()
 
     def test_download_and_verify_still_checks_sha256_after_download(self):
         """下载成功后仍应由现有流程执行 SHA256 校验。"""
