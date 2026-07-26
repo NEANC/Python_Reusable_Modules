@@ -5,7 +5,6 @@
 
 import hashlib
 import logging
-import sys
 import tempfile
 import unittest
 

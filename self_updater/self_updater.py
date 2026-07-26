@@ -87,7 +87,7 @@ class SelfUpdater:
             proxy: 代理地址（空字符串表示无代理）
             temp_folder: 基础运行时目录；不传则默认使用 LOCALAPPDATA，失败时回退程序目录
             logger: 日志记录器
-            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 requests 下载
+            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 PYPDL 下载
             download_segments: PYPDL 分段下载数量
             download_retries: PYPDL 单次下载内部重试次数
             download_timeout: PYPDL 下载超时时间，单位为秒
@@ -176,7 +176,7 @@ class SelfUpdater:
             self._download_with_pypdl(url, save_path)
             return True
         except Exception as e:
-            self.logger.error(f"下载失败: {e}")
+            self.logger.error(f"下载失败: {type(e).__name__}: {e}")
             return False
 
     def _download_with_pypdl(self, url: str, save_path: str) -> None:
