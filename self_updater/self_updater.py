@@ -87,7 +87,7 @@ class SelfUpdater:
             proxy: 代理地址（空字符串表示无代理）
             temp_folder: 基础运行时目录；不传则默认使用 LOCALAPPDATA，失败时回退程序目录
             logger: 日志记录器
-            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 PYPDL 下载
+            download_func: 下载回调 (url, save_path) -> bool，不传则使用内置 requests 下载
             download_segments: PYPDL 分段下载数量
             download_retries: PYPDL 单次下载内部重试次数
             download_timeout: PYPDL 下载超时时间，单位为秒
