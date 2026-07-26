@@ -787,6 +787,22 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("未传 version_func 时仅校验 SHA256", text)
         self.assertNotIn("return  # 或 sys.exit(1)", text)
 
+    def test_readme_documents_optional_pypdl_backend_and_fallback(self):
+        """README 应说明默认单线程、可选 PYPDL 和缺依赖回退。"""
+        readme_path = Path(__file__).resolve().parents[1] / "self_updater" / "README.md"
+        text = readme_path.read_text(encoding="utf-8")
+
+        self.assertIn("download_backend", text)
+        self.assertIn("single", text)
+        self.assertIn("pypdl", text.lower())
+        self.assertIn("可选依赖", text)
+        self.assertIn("回退", text)
+        self.assertIn("download_segments", text)
+        self.assertIn("download_retries", text)
+        self.assertIn("download_timeout", text)
+        self.assertIn("SOCKS", text)
+        self.assertIn("GitHub Release API", text)
+        self.assertIn("download_func", text)
 
     def test_pypdl_backend_uses_pypdl_with_options_and_proxy(self):
         """显式选择 PYPDL 后端时应使用 PYPDL，并传入下载参数和代理。"""
