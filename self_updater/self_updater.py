@@ -170,22 +170,33 @@ class SelfUpdater:
         }
 
     def _default_download(self, url: str, save_path: str) -> bool:
-        """内置下载实现（无进度条），外部可注入带进度的下载函数覆盖"""
+        """使用 PYPDL 下载文件。"""
         try:
-            headers = {'User-Agent': 'SelfUpdater'}
-            proxies = {'http': self.proxy, 'https': self.proxy} if self.proxy else None
-            response = requests.get(url, headers=headers, proxies=proxies,
-                                    timeout=120, stream=True)
-            response.raise_for_status()
             Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1048576):
-                    if chunk:
-                        f.write(chunk)
+            self._download_with_pypdl(url, save_path)
             return True
-        except requests.RequestException as e:
+        except Exception as e:
             self.logger.error(f"下载失败: {e}")
             return False
+
+    def _download_with_pypdl(self, url: str, save_path: str) -> None:
+        """调用 PYPDL 执行阻塞式文件下载。"""
+        from pypdl import Pypdl
+
+        downloader = Pypdl(logger=self.logger)
+        options = {
+            "url": url,
+            "file_path": save_path,
+            "segments": self.download_segments,
+            "retries": self.download_retries,
+            "timeout": self.download_timeout,
+            "display": False,
+            "block": True,
+            "overwrite": True,
+        }
+        if self.proxy:
+            options["proxy"] = self.proxy
+        downloader.start(**options)
 
     def _resolve_channel(self) -> str:
         """解析通道配置，兼容旧值"""

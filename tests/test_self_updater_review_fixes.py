@@ -5,6 +5,7 @@
 
 import hashlib
 import logging
+import sys
 import tempfile
 import unittest
 
@@ -46,6 +47,25 @@ class FakeExitedProcess:
     def kill(self):
         """模拟终止进程。"""
         return None
+
+
+class FakePypdl:
+    """用于模拟 PYPDL 下载器。"""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        """记录初始化参数。"""
+        self.args = args
+        self.kwargs = kwargs
+        self.calls = []
+        FakePypdl.instances.append(self)
+
+    def start(self, **kwargs):
+        """记录下载参数并写入模拟文件。"""
+        self.calls.append(kwargs)
+        Path(kwargs["file_path"]).write_bytes(b"downloaded")
+        return []
 
 
 class SelfUpdaterReviewFixesTest(unittest.TestCase):
@@ -701,6 +721,44 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
         self.assertIn("未传 version_func 时仅校验 SHA256", text)
         self.assertNotIn("return  # 或 sys.exit(1)", text)
+
+
+    def test_default_download_uses_pypdl_with_options_and_proxy(self):
+        """默认下载应使用 PYPDL，并传入下载参数和代理。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            FakePypdl.instances.clear()
+            save_path = Path(temp_dir) / "App.exe"
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="socks5://127.0.0.1:1080",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+                download_segments=8,
+                download_retries=4,
+                download_timeout=90,
+            )
+
+            with patch.dict("sys.modules", {"pypdl": Mock(Pypdl=FakePypdl)}):
+                result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+
+            self.assertTrue(result)
+            self.assertEqual(b"downloaded", save_path.read_bytes())
+            self.assertEqual(1, len(FakePypdl.instances))
+            call = FakePypdl.instances[0].calls[0]
+            self.assertEqual("https://example.invalid/App.exe", call["url"])
+            self.assertEqual(str(save_path), call["file_path"])
+            self.assertEqual(8, call["segments"])
+            self.assertEqual(4, call["retries"])
+            self.assertEqual(90, call["timeout"])
+            self.assertEqual("socks5://127.0.0.1:1080", call["proxy"])
+            self.assertFalse(call["display"])
+            self.assertTrue(call["block"])
+            self.assertTrue(call["overwrite"])
 
 
 if __name__ == "__main__":
