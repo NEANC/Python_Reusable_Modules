@@ -72,7 +72,6 @@ class FakeFailingPypdl:
 
     def __init__(self, *args, **kwargs):
         """忽略初始化参数。"""
-        return None
 
     def start(self, **kwargs):
         """模拟下载失败。"""
