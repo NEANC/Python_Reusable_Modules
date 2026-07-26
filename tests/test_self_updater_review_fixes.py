@@ -29,6 +29,14 @@ class FakeResponse:
         """返回预设的 JSON 数据。"""
         return self._payload
 
+    def iter_content(self, chunk_size=1048576):
+        """模拟分块读取响应体。"""
+        payload = self._payload
+        if isinstance(payload, bytes):
+            yield payload
+        else:
+            yield str(payload).encode("utf-8")
+
     def raise_for_status(self):
         """模拟成功响应。"""
         return None
@@ -911,6 +919,22 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertEqual("v1.2.0", release["tag_name"])
         get.assert_called_once()
         pypdl_download.assert_not_called()
+
+
+    def test_default_download_uses_single_backend_without_importing_pypdl(self):
+        """默认下载应使用内置单线程后端，不导入 PYPDL。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = self.make_updater(temp_folder=temp_dir)
+            response = FakeResponse(b"downloaded")
+
+            with patch.dict("sys.modules", {"pypdl": None}):
+                with patch("self_updater.self_updater.requests.get", return_value=response) as get:
+                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+
+            self.assertTrue(result)
+            self.assertEqual(b"downloaded", save_path.read_bytes())
+            get.assert_called_once()
 
 
 if __name__ == "__main__":

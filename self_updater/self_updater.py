@@ -183,14 +183,32 @@ class SelfUpdater:
         }
 
     def _default_download(self, url: str, save_path: str) -> bool:
-        """使用 PYPDL 下载文件。"""
+        """内置默认下载实现，根据 download_backend 选择下载方式。"""
         try:
             Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            self._download_with_pypdl(url, save_path)
+            if self.download_backend == "single":
+                self._download_with_requests(url, save_path)
+            else:
+                self._download_with_pypdl(url, save_path)
             return True
         except Exception as e:
             self.logger.error(f"下载失败: {type(e).__name__}: {e}")
             return False
+
+    def _download_with_requests(self, url: str, save_path: str) -> None:
+        """使用 requests 执行内置单线程分块下载。"""
+        response = requests.get(
+            url,
+            headers=self._make_headers(),
+            proxies=self._make_proxies(),
+            timeout=self.download_timeout,
+            stream=True,
+        )
+        response.raise_for_status()
+        with open(save_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1048576):
+                if chunk:
+                    f.write(chunk)
 
     def _download_with_pypdl(self, url: str, save_path: str) -> None:
         """调用 PYPDL 执行阻塞式文件下载。"""
