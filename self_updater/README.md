@@ -94,7 +94,7 @@ if need_exit:
     sys.exit(0)  # 退出程序，由 PowerShell 接管完成替换
 ```
 
-如需使用 PYPDL 多线程下载，设置 `download_backend="pypdl"` 并安装 `pypdl`。如果未安装 `pypdl`，程序会自动回退到内置单线程下载。`download_timeout` 仅对 PYPDL 后端生效；默认内置 single 单线程下载固定使用 120 秒超时。
+如需使用 PYPDL 分段下载，设置 `download_backend="pypdl"` 并安装 `pypdl`。如果未安装 `pypdl`，程序会自动回退到内置单线程下载。`download_timeout` 仅对 PYPDL 后端生效；默认内置 single 单线程下载固定使用 120 秒超时。
 
 ### 与 argparse 集成
 

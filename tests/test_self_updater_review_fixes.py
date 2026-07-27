@@ -82,6 +82,7 @@ class FakePypdl:
         self.args = args
         self.kwargs = kwargs
         self.calls = []
+        self.failed = []
         FakePypdl.instances.append(self)
 
     def start(self, **kwargs):
@@ -96,10 +97,23 @@ class FakeFailingPypdl:
 
     def __init__(self, *args, **kwargs):
         """忽略初始化参数。"""
+        self.failed = []
 
     def start(self, **kwargs):
         """模拟下载失败。"""
         raise RuntimeError("pypdl failed")
+
+
+class FakePypdlFailedList:
+    """用于模拟 PYPDL 下载返回失败列表但不抛异常。"""
+
+    def __init__(self, *args, **kwargs):
+        """忽略初始化参数。"""
+        self.failed = ["https://example.invalid/App.exe"]
+
+    def start(self, **kwargs):
+        """模拟下载失败但不抛异常，仅填充 failed 列表。"""
+        return []
 
 
 class SelfUpdaterReviewFixesTest(unittest.TestCase):
@@ -973,6 +987,30 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
             self.assertFalse(result)
             self.assertFalse(save_path.exists())
+            requests_download.assert_not_called()
+
+    def test_pypdl_backend_returns_false_when_pypdl_returns_failed_list(self):
+        """PYPDL 返回失败列表但不抛异常时应返回 False，不回退到单线程。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "App.exe"
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+                download_backend="pypdl",
+            )
+
+            with patch.dict("sys.modules", {"pypdl": Mock(Pypdl=FakePypdlFailedList)}):
+                with patch.object(updater, "_download_with_requests") as requests_download:
+                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+
+            self.assertFalse(result)
             requests_download.assert_not_called()
 
     def test_download_with_requests_restores_single_backend_baseline_semantics(self):

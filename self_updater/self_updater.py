@@ -237,6 +237,9 @@ class SelfUpdater:
         if self.proxy:
             options["proxy"] = self.proxy
         downloader.start(**options)
+        if downloader.failed:
+            self.logger.error(f"PYPDL 下载失败: {downloader.failed}")
+            raise RuntimeError(f"PYPDL 下载失败: {downloader.failed}")
 
     def _resolve_channel(self) -> str:
         """解析通道配置，兼容旧值"""
