@@ -14,6 +14,21 @@
 
 ---
 
+### download
+
+根目录 `download/` 是独立下载模块，可被外部直接使用：
+
+```python
+from download import DownloadManager
+
+manager = DownloadManager(proxy="", temp_folder="./tmp", logger=logger)
+manager.download_file_with_progress(url, save_path)
+```
+
+`self_updater` 的默认 exe 下载依赖该模块。复制或引入 `self_updater` 时，如果使用默认下载能力，需要同时包含 `download/`；如果传入自定义 `download_func`，则可完全覆盖默认下载行为。
+
+---
+
 ## License
 
 [WTFPL](./LICENSE)

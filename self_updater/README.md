@@ -28,12 +28,6 @@ tqdm>=4.67
 colorama>=0.4.6
 ```
 
-可选依赖（仅在 `download_backend="pypdl"` 时需要）：
-
-```text
-pypdl>=1.5
-```
-
 ---
 
 ## 文件结构
@@ -73,10 +67,7 @@ updater = SelfUpdater(
     app_name="MyApp",                                                 # 安全应用标识
     current_version="v1.0.0",                                         # 当前版本号
     proxy="",                                                         # HTTP 代理（留空则不使用）
-    download_backend="single",                                      # 默认内置单线程下载，不依赖 pypdl
-    download_segments=5,                                             # PYPDL 分段下载数量（仅 PYPDL 后端生效）
-    download_retries=3,                                              # PYPDL 内部重试次数（仅 PYPDL 后端生效）
-    download_timeout=120,                                            # 下载超时时间（秒，仅 PYPDL 后端生效）
+    download_func=None,                                               # 可选：自定义下载函数；默认由 download 模块提供
     temp_folder=temp_folder,                                          # 可选：基础运行时目录（不传则自动解析）
     logger=logger,
     self_update_channel="preview",                                    # "preview" 或 "stable"
@@ -94,7 +85,18 @@ if need_exit:
     sys.exit(0)  # 退出程序，由 PowerShell 接管完成替换
 ```
 
-如需使用 PYPDL 分段下载，设置 `download_backend="pypdl"` 并安装 `pypdl`。如果未安装 `pypdl`，程序会自动回退到内置单线程下载。`download_timeout` 仅对 PYPDL 后端生效；默认内置 single 单线程下载固定使用 120 秒超时。
+默认下载由仓库根目录的 `download` 模块提供。引入 `self_updater` 的默认下载能力时，需要同时包含根目录 `download/` 包。
+
+默认路径等价于：
+
+```python
+from download import DownloadManager
+
+manager = DownloadManager(proxy=proxy, temp_folder=temp_folder, logger=logger)
+manager.download_file_with_progress(url, save_path)
+```
+
+如需完全覆盖默认下载行为，继续传入 `download_func(url, save_path) -> bool`。
 
 ### 与 argparse 集成
 
@@ -212,11 +214,7 @@ SelfUpdater._cleanup_update_residue(logger)
 | `proxy`               | `str`                | 是   | HTTP/HTTPS 代理地址，留空 `""` 则不使用                 |
 | `temp_folder`         | `str`                | 否   | 基础运行时目录；不传则默认 `%LOCALAPPDATA%\\{app}\\SelfUpdate`，不可用时回退到 `program_dir\\SelfUpdate` |
 | `logger`              | `logging.Logger`     | 是   | 日志记录器                                              |
-| `download_backend`   | `str`                | 否   | 内置下载后端（`single` / `pypdl`），默认 `single`       |
-| `download_segments`  | `int`                | 否   | PYPDL 分段下载数量，默认 `5`                            |
-| `download_retries`   | `int`                | 否   | PYPDL 单次下载内部重试次数，默认 `3`                    |
-| `download_timeout`   | `int`                | 否   | 下载超时时间（秒），默认 `120`，仅 PYPDL 后端生效 |
-| `download_func`      | `(str, str) -> bool` | 否   | 自定义下载函数；传入后完全覆盖所有内置下载后端          |
+| `download_func`      | `(str, str) -> bool` | 否   | 自定义下载函数；传入后覆盖默认下载行为                  |
 | `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认，兼容旧值 `"release"`）或 `"stable"`（兼容旧值 `"latest"`） |
 | `is_bundled`          | `bool`               | 否   | 预检测的打包标记，避免重复调用 `detect_package_type()`  |
 | `package_type`        | `str`                | 否   | 预检测的打包方式：`"Nuitka"` 或 `"PyInstaller"`         |
@@ -391,4 +389,4 @@ Helper.ps1 和 Update.ps1 都通过 `Get-SHA256($filePath)` 计算文件哈希�
 5. **缓存机制**：下载的 exe 缓存到 `{temp_folder}/UpdateCache/installs/{version}/`，下次启动直接复用。
 6. **运行时目录清理**：更新完成前不要手动清理 `runtime_dir`，否则可能导致替换、校验或回滚失败。
 7. **失败禁用**：同一版本连续失败 3 次后标记为 `failed_disabled`，后续自动跳过该版本。
-8. **代理与 SOCKS 支持**：默认 `single` 后端由 `requests` 执行，SOCKS 是否可用取决于 `requests` 环境是否安装了 SOCKS 支持。`pypdl` 后端支持 HTTP / HTTPS / SOCKS 代理，但仅作用于 exe 下载阶段。GitHub Release API 查询始终由 `requests` 执行。
+8. **代理与 SOCKS 支持**：默认下载由 `download` 模块提供，使用 `requests` 执行，SOCKS 是否可用取决于 `requests` 环境是否安装了 SOCKS 支持。GitHub Release API 查询始终由 `requests` 执行。

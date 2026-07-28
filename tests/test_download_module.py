@@ -79,3 +79,22 @@ class DownloadModuleTest(unittest.TestCase):
 
         self.assertFalse((repo_root / "self_updater" / "download_manager.py").exists())
         self.assertFalse((repo_root / "self_updater" / "progress_bar.py").exists())
+
+    def test_readme_documents_download_module_relationship(self):
+        """README 应说明 self_updater 与 download 模块关系。"""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        root_readme = (repo_root / "README.md").read_text(encoding="utf-8")
+        updater_readme = (repo_root / "self_updater" / "README.md").read_text(encoding="utf-8")
+        combined = root_readme + "\n" + updater_readme
+
+        self.assertIn("from download import DownloadManager", combined)
+        self.assertIn("download_func", updater_readme)
+        self.assertIn("download_file_with_progress", combined)
+        self.assertNotIn("PYPDL", combined)
+        self.assertNotIn("pypdl", combined)
+        self.assertNotIn("download_backend", combined)
+        self.assertNotIn("download_segments", combined)
+        self.assertNotIn("download_retries", combined)
+        self.assertNotIn("download_timeout", combined)
