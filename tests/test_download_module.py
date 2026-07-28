@@ -70,3 +70,12 @@ class DownloadModuleTest(unittest.TestCase):
         self.assertEqual("C:/Temp/App", manager.temp_folder)
         self.assertIs(logger, manager.logger)
         self.assertEqual(2, manager.download_threads)
+
+    def test_legacy_self_updater_download_modules_are_removed(self):
+        """旧 self_updater 下载入口不应继续存在。"""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+
+        self.assertFalse((repo_root / "self_updater" / "download_manager.py").exists())
+        self.assertFalse((repo_root / "self_updater" / "progress_bar.py").exists())
