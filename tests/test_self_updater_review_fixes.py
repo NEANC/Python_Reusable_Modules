@@ -4,6 +4,7 @@
 """self_updater 模块的回归测试。"""
 
 import hashlib
+import inspect
 import logging
 import tempfile
 import unittest
@@ -72,50 +73,6 @@ class FakeExitedProcess:
         return None
 
 
-class FakePypdl:
-    """用于模拟 PYPDL 下载器。"""
-
-    instances = []
-
-    def __init__(self, *args, **kwargs):
-        """记录初始化参数。"""
-        self.args = args
-        self.kwargs = kwargs
-        self.calls = []
-        self.failed = []
-        FakePypdl.instances.append(self)
-
-    def start(self, **kwargs):
-        """记录下载参数并写入模拟文件。"""
-        self.calls.append(kwargs)
-        Path(kwargs["file_path"]).write_bytes(b"downloaded")
-        return []
-
-
-class FakeFailingPypdl:
-    """用于模拟 PYPDL 下载失败。"""
-
-    def __init__(self, *args, **kwargs):
-        """忽略初始化参数。"""
-        self.failed = []
-
-    def start(self, **kwargs):
-        """模拟下载失败。"""
-        raise RuntimeError("pypdl failed")
-
-
-class FakePypdlFailedList:
-    """用于模拟 PYPDL 下载返回失败列表但不抛异常。"""
-
-    def __init__(self, *args, **kwargs):
-        """忽略初始化参数。"""
-        self.failed = ["https://example.invalid/App.exe"]
-
-    def start(self, **kwargs):
-        """模拟下载失败但不抛异常，仅填充 failed 列表。"""
-        return []
-
-
 class SelfUpdaterReviewFixesTest(unittest.TestCase):
     """覆盖代码审查反馈中的关键修复项。"""
 
@@ -177,74 +134,6 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             )
 
         self.assertEqual(temp_dir, updater.temp_folder)
-
-    def test_init_stores_pypdl_download_options(self):
-        """初始化时应保存 PYPDL 下载参数。"""
-        updater = SelfUpdater(
-            github_repo="owner/repo",
-            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-            app_name="App",
-            current_version="v1.0.0",
-            proxy="socks5://127.0.0.1:1080",
-            logger=logging.getLogger("SelfUpdaterTest"),
-            temp_folder="C:/Temp/App",
-            is_bundled=True,
-            package_type="Nuitka",
-            download_segments=8,
-            download_retries=4,
-            download_timeout=90,
-        )
-
-        self.assertEqual(8, updater.download_segments)
-        self.assertEqual(4, updater.download_retries)
-        self.assertEqual(90, updater.download_timeout)
-
-    def test_init_stores_download_backend_default_and_custom_value(self):
-        """初始化时应保存下载后端，默认使用内置单线程。"""
-        default_updater = SelfUpdater(
-            github_repo="owner/repo",
-            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-            app_name="App",
-            current_version="v1.0.0",
-            proxy="",
-            logger=logging.getLogger("SelfUpdaterTest"),
-            temp_folder="C:/Temp/App",
-            is_bundled=True,
-            package_type="Nuitka",
-        )
-        pypdl_updater = SelfUpdater(
-            github_repo="owner/repo",
-            asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-            app_name="App",
-            current_version="v1.0.0",
-            proxy="",
-            logger=logging.getLogger("SelfUpdaterTest"),
-            temp_folder="C:/Temp/App",
-            is_bundled=True,
-            package_type="Nuitka",
-            download_backend="pypdl",
-        )
-
-        self.assertEqual("single", default_updater.download_backend)
-        self.assertEqual("pypdl", pypdl_updater.download_backend)
-
-    def test_init_rejects_unknown_download_backend(self):
-        """未知下载后端应在初始化阶段失败。"""
-        with self.assertRaises(ValueError) as ctx:
-            SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder="C:/Temp/App",
-                is_bundled=True,
-                package_type="Nuitka",
-                download_backend="auto",
-            )
-
-        self.assertIn("download_backend", str(ctx.exception))
 
     def test_build_update_runtime_paths_separates_program_and_runtime_files(self):
         """运行时路径 helper 应区分程序目录文件和 runtime_dir 文件。"""
@@ -817,288 +706,6 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("未传 version_func 时仅校验 SHA256", text)
         self.assertNotIn("return  # 或 sys.exit(1)", text)
 
-    def test_readme_documents_optional_pypdl_backend_and_fallback(self):
-        """README 应说明默认单线程、可选 PYPDL 和缺依赖回退。"""
-        readme_path = Path(__file__).resolve().parents[1] / "self_updater" / "README.md"
-        text = readme_path.read_text(encoding="utf-8")
-
-        self.assertIn("download_backend", text)
-        self.assertIn("single", text)
-        self.assertIn("pypdl", text.lower())
-        self.assertIn("可选依赖", text)
-        self.assertIn("回退", text)
-        self.assertIn("download_segments", text)
-        self.assertIn("download_retries", text)
-        self.assertIn("download_timeout", text)
-        self.assertIn("SOCKS", text)
-        self.assertIn("GitHub Release API", text)
-        self.assertIn("download_func", text)
-        self.assertIn("仅 PYPDL 后端生效", text)
-        self.assertNotIn("single 使用 download_timeout", text)
-
-    def test_pypdl_backend_uses_pypdl_with_options_and_proxy(self):
-        """显式选择 PYPDL 后端时应使用 PYPDL，并传入下载参数和代理。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            FakePypdl.instances.clear()
-            save_path = Path(temp_dir) / "App.exe"
-            updater = SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="socks5://127.0.0.1:1080",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder=temp_dir,
-                is_bundled=True,
-                package_type="Nuitka",
-                download_backend="pypdl",
-                download_segments=8,
-                download_retries=4,
-                download_timeout=90,
-            )
-
-            with patch.dict("sys.modules", {"pypdl": Mock(Pypdl=FakePypdl)}):
-                result = updater._default_download("https://example.invalid/App.exe", str(save_path))
-
-            self.assertTrue(result)
-            self.assertEqual(b"downloaded", save_path.read_bytes())
-            self.assertEqual(1, len(FakePypdl.instances))
-            call = FakePypdl.instances[0].calls[0]
-            self.assertEqual("https://example.invalid/App.exe", call["url"])
-            self.assertEqual(str(save_path), call["file_path"])
-            self.assertEqual(8, call["segments"])
-            self.assertEqual(4, call["retries"])
-            self.assertEqual(90, call["timeout"])
-            self.assertEqual("socks5://127.0.0.1:1080", call["proxy"])
-            self.assertFalse(call["display"])
-            self.assertTrue(call["block"])
-            self.assertTrue(call["overwrite"])
-
-    def test_pypdl_backend_falls_back_to_single_when_pypdl_is_missing(self):
-        """选择 PYPDL 但缺少 pypdl 模块时应回退到单线程下载。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder=temp_dir,
-                is_bundled=True,
-                package_type="Nuitka",
-                download_backend="pypdl",
-            )
-            response = FakeResponse(b"fallback")
-
-            with patch("self_updater.self_updater.requests.get", return_value=response) as get:
-                with patch.object(updater, "_download_with_pypdl", side_effect=ModuleNotFoundError("No module named 'pypdl'", name="pypdl")):
-                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
-
-            self.assertTrue(result)
-            self.assertEqual(b"fallback", save_path.read_bytes())
-            get.assert_called_once()
-
-    def test_pypdl_backend_does_not_fallback_for_internal_import_error(self):
-        """PYPDL 内部依赖异常不应被误判为 pypdl 缺失。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder=temp_dir,
-                is_bundled=True,
-                package_type="Nuitka",
-                download_backend="pypdl",
-            )
-
-            with patch.object(updater, "_download_with_pypdl", side_effect=ModuleNotFoundError("No module named 'aiohttp'", name="aiohttp")):
-                with patch.object(updater, "_download_with_requests") as requests_download:
-                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
-
-            self.assertFalse(result)
-            requests_download.assert_not_called()
-
-    def test_custom_download_func_bypasses_builtin_backends(self):
-        """传入 download_func 时应完全绕过所有内置下载后端。"""
-        calls = []
-
-        def custom_download(url, save_path):
-            """模拟调用方自定义下载函数。"""
-            calls.append((url, save_path))
-            Path(save_path).write_bytes(b"custom")
-            return True
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="socks5://127.0.0.1:1080",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder=temp_dir,
-                download_func=custom_download,
-                is_bundled=True,
-                package_type="Nuitka",
-                download_backend="pypdl",
-                download_segments=8,
-                download_retries=4,
-                download_timeout=90,
-            )
-
-            with patch.object(updater, "_download_with_pypdl") as pypdl_download:
-                with patch.object(updater, "_download_with_requests") as requests_download:
-                    result = updater._download_func("https://example.invalid/App.exe", str(save_path))
-
-            self.assertTrue(result)
-            self.assertEqual([("https://example.invalid/App.exe", str(save_path))], calls)
-            self.assertEqual(b"custom", save_path.read_bytes())
-            pypdl_download.assert_not_called()
-            requests_download.assert_not_called()
-
-
-    def test_pypdl_backend_returns_false_when_pypdl_runtime_fails(self):
-        """PYPDL 运行时失败应返回 False，不回退到单线程。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder=temp_dir,
-                is_bundled=True,
-                package_type="Nuitka",
-                download_backend="pypdl",
-            )
-
-            with patch.dict("sys.modules", {"pypdl": Mock(Pypdl=FakeFailingPypdl)}):
-                with patch.object(updater, "_download_with_requests") as requests_download:
-                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
-
-            self.assertFalse(result)
-            self.assertFalse(save_path.exists())
-            requests_download.assert_not_called()
-
-    def test_pypdl_backend_returns_false_when_pypdl_returns_failed_list(self):
-        """PYPDL 返回失败列表但不抛异常时应返回 False，不回退到单线程。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder=temp_dir,
-                is_bundled=True,
-                package_type="Nuitka",
-                download_backend="pypdl",
-            )
-
-            with patch.dict("sys.modules", {"pypdl": Mock(Pypdl=FakePypdlFailedList)}):
-                with patch.object(updater, "_download_with_requests") as requests_download:
-                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
-
-            self.assertFalse(result)
-            requests_download.assert_not_called()
-
-    def test_download_with_requests_restores_single_backend_baseline_semantics(self):
-        """单线程下载应恢复旧版固定请求参数与成功后建目录语义。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "nested" / "App.exe"
-            updater = SelfUpdater(
-                github_repo="owner/repo",
-                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
-                app_name="App",
-                current_version="v1.0.0",
-                proxy="socks5://127.0.0.1:1080",
-                logger=logging.getLogger("SelfUpdaterTest"),
-                temp_folder=temp_dir,
-                is_bundled=True,
-                package_type="Nuitka",
-                download_timeout=90,
-            )
-            response = FakeResponse(b"downloaded")
-            mkdir_called_after_raise = []
-
-            def mkdir_side_effect(path_obj, *args, **kwargs):
-                """记录 mkdir 调用时机并执行真实创建。"""
-                mkdir_called_after_raise.append(response.raise_called)
-                return original_mkdir(path_obj, *args, **kwargs)
-
-            original_mkdir = Path.mkdir
-            with patch.object(Path, "mkdir", autospec=True, side_effect=mkdir_side_effect) as mkdir:
-                with patch("self_updater.self_updater.requests.get", return_value=response) as get:
-                    result = updater._download_with_requests("https://example.invalid/App.exe", str(save_path))
-
-            self.assertTrue(result)
-            self.assertEqual(b"downloaded", save_path.read_bytes())
-            get.assert_called_once_with(
-                "https://example.invalid/App.exe",
-                headers={"User-Agent": "SelfUpdater"},
-                proxies={"http": "socks5://127.0.0.1:1080", "https": "socks5://127.0.0.1:1080"},
-                timeout=120,
-                stream=True,
-            )
-            mkdir.assert_called_once_with(save_path.parent, parents=True, exist_ok=True)
-            self.assertEqual([True], mkdir_called_after_raise)
-
-    def test_download_with_requests_uses_none_proxies_when_proxy_is_empty(self):
-        """单线程下载在未配置代理时应传入 None。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = self.make_updater(temp_folder=temp_dir)
-            response = FakeResponse(b"downloaded")
-
-            with patch("self_updater.self_updater.requests.get", return_value=response) as get:
-                result = updater._download_with_requests("https://example.invalid/App.exe", str(save_path))
-
-        self.assertTrue(result)
-        self.assertEqual(None, get.call_args.kwargs["proxies"])
-        self.assertEqual(120, get.call_args.kwargs["timeout"])
-
-    def test_download_with_requests_returns_false_for_request_exception_without_creating_directory(self):
-        """单线程下载遇到 requests.RequestException 时应返回 False，且不提前建目录。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "nested" / "App.exe"
-            updater = self.make_updater(temp_folder=temp_dir)
-
-            with patch("pathlib.Path.mkdir") as mkdir:
-                with patch(
-                    "self_updater.self_updater.requests.get",
-                    return_value=FakeRequestFailureResponse(),
-                ):
-                    result = updater._download_with_requests("https://example.invalid/App.exe", str(save_path))
-
-        self.assertFalse(result)
-        mkdir.assert_not_called()
-        self.assertFalse(save_path.exists())
-
-    def test_default_download_single_backend_directly_returns_requests_backend_result(self):
-        """single 分支应直接返回 requests 后端结果，不进入 PYPDL 回退逻辑。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = self.make_updater(temp_folder=temp_dir)
-
-            with patch.object(updater, "_download_with_requests", return_value=False) as requests_download:
-                with patch.object(updater, "_download_with_pypdl") as pypdl_download:
-                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
-
-        self.assertFalse(result)
-        requests_download.assert_called_once_with("https://example.invalid/App.exe", str(save_path))
-        pypdl_download.assert_not_called()
-
     def test_download_and_verify_still_checks_sha256_after_download(self):
         """下载成功后仍应由现有流程执行 SHA256 校验。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1128,38 +735,93 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(tmp_path.exists())
             self.assertFalse(sha_path.exists())
 
-
-    def test_github_release_api_still_uses_requests_not_pypdl(self):
-        """GitHub Release API 查询应继续使用 requests，不走 PYPDL。"""
-        releases = [
-            {"draft": False, "tag_name": "v1.2.0", "assets": []},
-        ]
-        updater = self.make_updater(current_version="v1.0.0")
-
-        with patch("self_updater.self_updater.requests.get", return_value=FakeResponse(releases)) as get:
-            with patch.object(updater, "_download_with_pypdl") as pypdl_download:
-                release = updater._fetch_latest_release()
-
-        self.assertIsNotNone(release)
-        self.assertEqual("v1.2.0", release["tag_name"])
-        get.assert_called_once()
-        pypdl_download.assert_not_called()
-
-
-    def test_default_download_uses_single_backend_without_importing_pypdl(self):
-        """默认下载应使用内置单线程后端，不导入 PYPDL。"""
+    def test_default_download_uses_download_manager(self):
+        """默认下载应委托给独立 download.DownloadManager。"""
         with tempfile.TemporaryDirectory() as temp_dir:
-            save_path = Path(temp_dir) / "App.exe"
-            updater = self.make_updater(temp_folder=temp_dir)
-            response = FakeResponse(b"downloaded")
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="http://127.0.0.1:7890",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                is_bundled=True,
+                package_type="Nuitka",
+            )
+            save_path = str(Path(temp_dir) / "App.exe")
 
-            with patch.dict("sys.modules", {"pypdl": None}):
-                with patch("self_updater.self_updater.requests.get", return_value=response) as get:
-                    result = updater._default_download("https://example.invalid/App.exe", str(save_path))
+            with patch("self_updater.self_updater.DownloadManager") as manager_class:
+                manager = manager_class.return_value
+                manager.download_file_with_progress.return_value = True
+
+                result = updater._default_download("https://example.invalid/App.exe", save_path)
 
             self.assertTrue(result)
-            self.assertEqual(b"downloaded", save_path.read_bytes())
-            get.assert_called_once()
+            manager_class.assert_called_once_with(
+                proxy="http://127.0.0.1:7890",
+                temp_folder=temp_dir,
+                logger=updater.logger,
+            )
+            manager.download_file_with_progress.assert_called_once_with(
+                "https://example.invalid/App.exe",
+                save_path,
+            )
+
+    def test_custom_download_func_skips_download_manager(self):
+        """传入 download_func 时不应创建默认 DownloadManager。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            custom_download = Mock(return_value=True)
+            updater = SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder=temp_dir,
+                download_func=custom_download,
+                is_bundled=True,
+                package_type="Nuitka",
+            )
+            save_path = str(Path(temp_dir) / "App.exe")
+
+            with patch("self_updater.self_updater.DownloadManager") as manager_class:
+                result = updater._download_func("https://example.invalid/App.exe", save_path)
+
+            self.assertTrue(result)
+            custom_download.assert_called_once_with("https://example.invalid/App.exe", save_path)
+            manager_class.assert_not_called()
+
+    def test_init_rejects_removed_download_backend_options_by_type_error(self):
+        """旧下载后端参数已移除，应由构造函数自然抛出 TypeError。"""
+        with self.assertRaises(TypeError):
+            SelfUpdater(
+                github_repo="owner/repo",
+                asset_pattern=r"^App-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$",
+                app_name="App",
+                current_version="v1.0.0",
+                proxy="",
+                logger=logging.getLogger("SelfUpdaterTest"),
+                temp_folder="C:/Temp/App",
+                is_bundled=True,
+                package_type="Nuitka",
+                download_backend="pypdl",
+            )
+
+    def test_self_updater_module_no_longer_contains_pypdl_or_legacy_download_helpers(self):
+        """SelfUpdater 不应继续保留 PYPDL 或旧单线程默认下载实现。"""
+        import self_updater.self_updater as self_updater_module
+
+        source = inspect.getsource(self_updater_module)
+
+        self.assertNotIn("pypdl", source.lower())
+        self.assertNotIn("_download_with_pypdl", source)
+        self.assertNotIn("_download_with_requests", source)
+        self.assertNotIn("download_backend", source)
+        self.assertNotIn("download_segments", source)
+        self.assertNotIn("download_retries", source)
+        self.assertNotIn("download_timeout", source)
 
 
 if __name__ == "__main__":

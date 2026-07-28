@@ -28,6 +28,8 @@ import requests
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from download import DownloadManager
+
 from .ps1_fragments import generate_common_base_functions_ps1
 from .ps1_fragments import generate_common_state_functions_ps1
 from .ps1_fragments import generate_helper_argument_functions_ps1
@@ -64,17 +66,11 @@ class SelfUpdater:
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     }
-    _DOWNLOAD_BACKENDS = {"single", "pypdl"}
-
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
                  current_version: str, proxy: str,
                  logger: logging.Logger,
                  temp_folder: Optional[str] = None,
                  download_func: Optional[Callable[[str, str], bool]] = None,
-                 download_backend: str = "single",
-                 download_segments: int = 5,
-                 download_retries: int = 3,
-                 download_timeout: int = 120,
                  self_update_channel: str = 'preview',
                  is_bundled: Optional[bool] = None,
                  package_type: Optional[str] = None):
@@ -90,16 +86,11 @@ class SelfUpdater:
             temp_folder: 基础运行时目录；不传则默认使用 LOCALAPPDATA，失败时回退程序目录
             logger: 日志记录器
             download_func: 下载回调 (url, save_path) -> bool，不传则使用内置下载后端
-            download_backend: 内置下载后端，支持 "single" 和 "pypdl"
-            download_segments: PYPDL 分段下载数量，仅 PYPDL 后端生效
-            download_retries: PYPDL 单次下载内部重试次数，仅 PYPDL 后端生效
-            download_timeout: 下载超时时间，单位为秒，仅 PYPDL 后端生效
             self_update_channel: 更新通道 ('preview', 'stable')
             is_bundled: 外部预检测的是否为打包程序（可选）
             package_type: 外部预检测的打包方式（可选）
         """
         self._validate_app_name(app_name)
-        self._validate_download_backend(download_backend)
         self.github_repo = github_repo
         self.asset_regex = re.compile(asset_pattern)
         self.app_name = app_name
@@ -107,10 +98,6 @@ class SelfUpdater:
         self.proxy = proxy
         self.logger = logger
         self.temp_folder = self._resolve_temp_folder(temp_folder)
-        self.download_backend = download_backend
-        self.download_segments = download_segments
-        self.download_retries = download_retries
-        self.download_timeout = download_timeout
         self._download_func = download_func or self._default_download
         self.self_update_channel = self_update_channel
         self._is_bundled = is_bundled
@@ -132,14 +119,6 @@ class SelfUpdater:
             raise ValueError(
                 "app_name 只能包含英文字母、数字、下划线、点和连字符，"
                 "且不能为纯点号、首尾点号或 Windows 保留设备名"
-            )
-
-    @classmethod
-    def _validate_download_backend(cls, download_backend: str) -> None:
-        """校验内置下载后端名称。"""
-        if download_backend not in cls._DOWNLOAD_BACKENDS:
-            raise ValueError(
-                "download_backend 只能是 'single' 或 'pypdl'"
             )
 
     def _resolve_temp_folder(self, temp_folder: Optional[str]) -> str:
@@ -183,63 +162,13 @@ class SelfUpdater:
         }
 
     def _default_download(self, url: str, save_path: str) -> bool:
-        """内置默认下载实现，根据 download_backend 选择下载方式。"""
-        if self.download_backend == "single":
-            return self._download_with_requests(url, save_path)
-
-        try:
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            self._download_with_pypdl(url, save_path)
-            return True
-        except ModuleNotFoundError as e:
-            if e.name != "pypdl":
-                self.logger.error(f"下载失败: {type(e).__name__}: {e}")
-                return False
-            self.logger.warning("未安装 pypdl，回退到内置单线程下载")
-            return self._download_with_requests(url, save_path)
-        except Exception as e:
-            self.logger.error(f"下载失败: {type(e).__name__}: {e}")
-            return False
-
-    def _download_with_requests(self, url: str, save_path: str) -> bool:
-        """使用 requests 执行内置单线程分块下载。"""
-        try:
-            headers = {'User-Agent': 'SelfUpdater'}
-            proxies = {'http': self.proxy, 'https': self.proxy} if self.proxy else None
-            response = requests.get(url, headers=headers, proxies=proxies,
-                                    timeout=120, stream=True)
-            response.raise_for_status()
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1048576):
-                    if chunk:
-                        f.write(chunk)
-            return True
-        except requests.RequestException as e:
-            self.logger.error(f"下载失败: {e}")
-            return False
-
-    def _download_with_pypdl(self, url: str, save_path: str) -> None:
-        """调用 PYPDL 执行阻塞式文件下载。"""
-        from pypdl import Pypdl
-
-        downloader = Pypdl(logger=self.logger)
-        options = {
-            "url": url,
-            "file_path": save_path,
-            "segments": self.download_segments,
-            "retries": self.download_retries,
-            "timeout": self.download_timeout,
-            "display": False,
-            "block": True,
-            "overwrite": True,
-        }
-        if self.proxy:
-            options["proxy"] = self.proxy
-        downloader.start(**options)
-        if downloader.failed:
-            self.logger.error(f"PYPDL 下载失败: {downloader.failed}")
-            raise RuntimeError(f"PYPDL 下载失败: {downloader.failed}")
+        """使用独立下载模块执行默认下载。"""
+        manager = DownloadManager(
+            proxy=self.proxy,
+            temp_folder=self.temp_folder,
+            logger=self.logger,
+        )
+        return manager.download_file_with_progress(url, save_path)
 
     def _resolve_channel(self) -> str:
         """解析通道配置，兼容旧值"""
