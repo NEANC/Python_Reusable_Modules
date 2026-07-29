@@ -87,11 +87,15 @@ class DownloadModuleTest(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         root_readme = (repo_root / "README.md").read_text(encoding="utf-8")
         updater_readme = (repo_root / "self_updater" / "README.md").read_text(encoding="utf-8")
-        combined = root_readme + "\n" + updater_readme
+        download_readme = (repo_root / "download" / "README.md").read_text(encoding="utf-8")
+        combined = root_readme + "\n" + updater_readme + "\n" + download_readme
 
         self.assertIn("from download import DownloadManager", combined)
         self.assertIn("download_func", updater_readme)
         self.assertIn("download_file_with_progress", combined)
+        self.assertIn("## 特性", download_readme)
+        self.assertIn("## API 参考", download_readme)
+        self.assertIn("download/", updater_readme)
         self.assertNotIn("PYPDL", combined)
         self.assertNotIn("pypdl", combined)
         self.assertNotIn("download_backend", combined)

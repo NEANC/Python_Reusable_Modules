@@ -33,14 +33,20 @@ colorama>=0.4.6
 ## 文件结构
 
 ```
-self_updater/
-├── __init__.py        # 包入口，重导出公开 API
-├── self_utils.py      # 工具函数（版本比较、SHA256、打包检测）
-├── self_config.py     # UpdateState（INI 状态文件管理）
-├── self_updater.py    # SelfUpdater 核心类与脚本生成流程
-├── ps1_fragments.py   # PowerShell 脚本片段生成函数
-├── self_progress.py   # tqdm 进度条 + colorama 颜色封装
-└── README.md
+Python_Self-Updater/
+├── download/             # 独立下载模块，提供默认 exe 下载能力
+│   ├── __init__.py       # 包入口，导出 DownloadManager
+│   ├── manager.py        # DownloadManager 下载管理器
+│   ├── progress.py       # 下载专用 tqdm 进度条与消息格式化
+│   └── README.md
+└── self_updater/
+    ├── __init__.py       # 包入口，重导出公开 API
+    ├── self_utils.py     # 工具函数（版本比较、SHA256、打包检测）
+    ├── self_config.py    # UpdateState（INI 状态文件管理）
+    ├── self_updater.py   # SelfUpdater 核心类与脚本生成流程
+    ├── ps1_fragments.py  # PowerShell 脚本片段生成函数
+    ├── self_progress.py  # 通用 tqdm 进度条 + colorama 颜色封装
+    └── README.md
 ```
 
 ---
