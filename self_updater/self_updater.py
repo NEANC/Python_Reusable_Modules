@@ -66,6 +66,9 @@ class SelfUpdater:
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     }
+    _UPDATE_CACHE_MARKER_FILE = ".self_updater_cache"
+    _UPDATE_CACHE_MARKER_CONTENT = "self_updater_update_cache_v1\n"
+    _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
                  current_version: str, proxy: str,
                  logger: logging.Logger,
@@ -824,6 +827,17 @@ class SelfUpdater:
 
         logger.info("新版验证全部通过")
         return 0
+
+    @classmethod
+    def _is_unsafe_directory(cls, path: Path) -> bool:
+        """判断目录是否为符号链接或 Windows reparse point。"""
+        try:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        except OSError:
+            return True
+        return path.is_symlink() or bool(
+            attributes & cls._FILE_ATTRIBUTE_REPARSE_POINT
+        )
 
     @staticmethod
     def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> None:

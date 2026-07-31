@@ -861,6 +861,21 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertNotIn("download_retries", source)
         self.assertNotIn("download_timeout", source)
 
+    def test_path_is_reparse_point_rejects_symbolic_link(self):
+        """符号链接应被识别为不可递归处理的路径。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "target"
+            link = root / "link"
+            target.mkdir()
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"当前环境无法创建符号链接: {error}")
+
+            self.assertTrue(SelfUpdater._is_unsafe_directory(link))
+            self.assertFalse(SelfUpdater._is_unsafe_directory(target))
+
 
 if __name__ == "__main__":
     unittest.main()
