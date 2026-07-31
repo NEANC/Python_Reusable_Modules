@@ -552,6 +552,44 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(runtime_dir.exists())
             self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
 
+    def test_cleanup_update_residue_removes_empty_runtime_subdirectories(self):
+        """清理更新残留后应删除运行时目录内的空子目录。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            nested_dir = runtime_dir / "nested" / "empty"
+            nested_dir.mkdir(parents=True, exist_ok=True)
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(paths["new_file"])
+            state["backup_file"] = str(paths["backup_file"])
+            state["helper_ps1"] = str(paths["helper_ps1"])
+            state["update_ps1"] = str(paths["update_ps1"])
+            state["lock_file"] = str(paths["lock_file"])
+            state.save()
+            runtime_files = (
+                paths["new_file"],
+                paths["backup_file"],
+                paths["helper_ps1"],
+                paths["update_ps1"],
+                paths["lock_file"],
+            )
+            for runtime_file in runtime_files:
+                runtime_file.write_text("runtime", encoding="utf-8")
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
+                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertFalse(nested_dir.exists())
+            self.assertFalse((runtime_dir / "nested").exists())
+            self.assertFalse(runtime_dir.exists())
+            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
     def test_replace_executable_records_helper_start_failure(self):
         """helper 启动失败时应写入状态文件的 last_error。"""
         with tempfile.TemporaryDirectory() as temp_dir:

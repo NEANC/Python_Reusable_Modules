@@ -826,6 +826,30 @@ class SelfUpdater:
         return 0
 
     @staticmethod
+    def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> None:
+        """删除指定目录树中的空目录。"""
+        if not root_dir.exists():
+            return
+
+        empty_dirs = sorted(
+            (path for path in root_dir.rglob("*") if path.is_dir() and not path.is_symlink()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for dir_path in empty_dirs:
+            try:
+                dir_path.rmdir()
+                logger.debug(f"已删除空目录: {dir_path}")
+            except OSError:
+                pass
+
+        try:
+            root_dir.rmdir()
+            logger.debug(f"已删除空目录: {root_dir}")
+        except OSError:
+            pass
+
+    @staticmethod
     def _cleanup_update_residue(logger: Optional[logging.Logger] = None) -> None:
         """
         按状态文件记录的精确路径清理上次成功更新后的残留文件。
@@ -881,11 +905,7 @@ class SelfUpdater:
                 logger.warning(f"清理残留文件失败，已跳过: {file_path}, {e}")
 
         if runtime_dir and runtime_dir.exists():
-            try:
-                runtime_dir.rmdir()
-                logger.debug(f"已删除空运行时目录: {runtime_dir}")
-            except OSError:
-                pass
+            SelfUpdater._remove_empty_directories(runtime_dir, logger)
 
         # 最后删除状态文件自身
         try:
