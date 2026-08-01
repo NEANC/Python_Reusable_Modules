@@ -963,7 +963,7 @@ class SelfUpdater:
             except OSError as e:
                 logger.warning(f"清理残留文件失败，已跳过: {file_path}, {e}")
 
-        if runtime_dir and runtime_dir.exists():
+        if resolved_runtime_dir and runtime_dir.exists():
             SelfUpdater._remove_empty_directories(runtime_dir, logger)
 
         # 最后删除状态文件自身
