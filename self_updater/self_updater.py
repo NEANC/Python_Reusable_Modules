@@ -844,12 +844,18 @@ class SelfUpdater:
     def _create_update_cache_marker(cls, cache_dir: Path) -> Path:
         """创建缓存标记文件，返回标记路径。
 
-        标记路径若已存在且是链接或 reparse point，直接拒绝，避免跟随外部目标。
+        标记路径若已存在且是链接或 reparse point，直接拒绝，避免跟随外部目标；
+        悬空链接使用 lstat 检测节点存在性，不依赖目标路径是否存在。
         """
         cache_dir.mkdir(parents=True, exist_ok=True)
         marker_path = cache_dir.parent.parent / cls._UPDATE_CACHE_MARKER_FILE
-        if marker_path.exists() and cls._is_unsafe_path(marker_path):
-            raise OSError(f"缓存标记路径为链接或重解析点: {marker_path}")
+        try:
+            marker_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if cls._is_unsafe_path(marker_path):
+                raise OSError(f"缓存标记路径为链接或重解析点: {marker_path}")
         try:
             with marker_path.open("x", encoding="ascii") as marker_file:
                 marker_file.write(cls._UPDATE_CACHE_MARKER_CONTENT)
@@ -923,6 +929,8 @@ class SelfUpdater:
             if not resolved_runtime_dir:
                 raise ValueError("状态文件未记录运行时目录")
             resolved_runtime_dir.relative_to(resolved_temp_folder)
+            if resolved_runtime_dir == resolved_temp_folder:
+                raise ValueError("运行时目录不能等于临时目录")
             if self._is_unsafe_path(runtime_dir):
                 raise ValueError("运行时目录为链接或 reparse point")
         except (OSError, ValueError) as error:

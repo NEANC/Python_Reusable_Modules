@@ -618,6 +618,35 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(external_dir.exists())
             self.assertTrue(external_file.exists())
 
+    def test_cleanup_update_residue_skips_runtime_dir_equal_to_temp_folder(self):
+        """状态文件中的运行时目录等于临时目录时不得清理。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            temp_folder = Path(updater.temp_folder)
+            residue_file = temp_folder / "App.new.exe"
+            residue_file.write_text("residue", encoding="utf-8")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(temp_folder)
+            state["new_file"] = str(residue_file)
+            state["backup_file"] = str(temp_folder / "App.backup.exe")
+            state["helper_ps1"] = str(temp_folder / "App_Update_Helper.ps1")
+            state["update_ps1"] = str(temp_folder / "App_Update.ps1")
+            state["lock_file"] = str(temp_folder / "update_started.lock")
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(residue_file.exists())
+            self.assertTrue(temp_folder.exists())
+
     def test_cleanup_update_residue_preserves_external_empty_subdirectories(self):
         """状态文件中的外部运行时目录及其空子目录不得被清理。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1108,21 +1137,82 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(cache_dir.exists())
 
     def test_create_update_cache_writes_marker_before_download(self):
-        """新建下载缓存时应写入有效标记文件。"""
+        """新建下载缓存时标记应写入 UpdateCache 根目录。"""
         with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
             updater = self.make_updater(temp_folder=temp_dir)
-            cache_dir = Path(temp_dir) / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
 
             marker_path = updater._create_update_cache_marker(cache_dir)
 
             self.assertEqual(
-                cache_dir.parent.parent / SelfUpdater._UPDATE_CACHE_MARKER_FILE,
+                root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE,
                 marker_path,
             )
             self.assertEqual(
                 SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
                 marker_path.read_text(encoding="ascii"),
             )
+
+    def test_clean_update_cache_recognizes_created_marker(self):
+        """创建标记后 clean_update_cache 应能识别并清理该缓存。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            cached_file = cache_dir / "App.exe"
+            cached_file.write_bytes(b"cache")
+
+            updater._create_update_cache_marker(cache_dir)
+
+            SelfUpdater.clean_update_cache(
+                str(root),
+                logging.getLogger("SelfUpdaterTest"),
+            )
+
+            self.assertFalse(cache_dir.exists())
+            self.assertFalse((root / "UpdateCache").exists())
+
+    def test_create_update_cache_marker_rejects_dangling_link_via_mock(self):
+        """标记路径为悬空符号链接时应拒绝写入，不创建外部目标。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            marker_path = root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            dangling_target = root / "dangling-target"
+
+            real_lstat = Path.lstat
+            real_is_symlink = Path.is_symlink
+
+            def fake_lstat(self):
+                """标记节点存在（悬空链接），但其目标不存在。"""
+                if str(self) == str(marker_path):
+                    return cache_dir.stat()
+                return real_lstat(self)
+
+            def fake_is_symlink(self):
+                """仅将标记路径视为符号链接。"""
+                return str(self) == str(marker_path) or real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "lstat",
+                    autospec=True,
+                    side_effect=fake_lstat,
+            ), patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                with self.assertRaises(OSError):
+                    updater._create_update_cache_marker(cache_dir)
+
+            self.assertFalse(marker_path.exists())
+            self.assertFalse(dangling_target.exists())
 
     def test_create_update_cache_marker_is_idempotent(self):
         """重复创建缓存标记不应覆盖已有标记。"""
@@ -1220,7 +1310,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             updater = self.make_updater(temp_folder=temp_dir)
             cache_dir = Path(temp_dir) / "UpdateCache" / "installs" / "v1.2.0"
             cache_dir.mkdir(parents=True)
-            marker_path = cache_dir.parent.parent / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            marker_path = Path(temp_dir) / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
             external_target = Path(temp_dir) / "external-target"
             external_target.write_text("outside", encoding="utf-8")
             try:
@@ -1302,7 +1392,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             updater = self.make_updater(temp_folder=str(root))
             cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
             cache_dir.mkdir(parents=True)
-            marker_path = cache_dir.parent.parent / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            marker_path = root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
             marker_path.write_text("tampered", encoding="ascii")
 
             real_is_symlink = Path.is_symlink
