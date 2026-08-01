@@ -1160,11 +1160,11 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             root = Path(temp_dir)
             updater = self.make_updater(temp_folder=str(root))
             cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
-            cache_dir.mkdir(parents=True)
+            marker_path = updater._create_update_cache_marker(cache_dir, temp_dir)
             cached_file = cache_dir / "App.exe"
             cached_file.write_bytes(b"cache")
 
-            updater._create_update_cache_marker(cache_dir, temp_dir)
+            self.assertTrue(marker_path.exists())
 
             SelfUpdater.clean_update_cache(
                 str(root),
@@ -1214,17 +1214,78 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(marker_path.exists())
             self.assertFalse(dangling_target.exists())
 
-    def test_create_update_cache_marker_is_idempotent(self):
-        """重复创建缓存标记不应覆盖已有标记。"""
+    def test_create_update_cache_marker_accepts_existing_valid_marker(self):
+        """重复检查有效缓存标记不应改写其内容。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             updater = self.make_updater(temp_folder=temp_dir)
             cache_dir = Path(temp_dir) / "UpdateCache" / "installs" / "v1.2.0"
             marker_path = updater._create_update_cache_marker(cache_dir, temp_dir)
-            marker_path.write_text("tampered", encoding="ascii")
 
             updater._create_update_cache_marker(cache_dir, temp_dir)
 
-            self.assertEqual("tampered", marker_path.read_text(encoding="ascii"))
+            self.assertEqual(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                marker_path.read_text(encoding="ascii"),
+            )
+
+    def test_create_update_cache_marker_rejects_historical_cache_without_marker(self):
+        """历史缓存没有标记时不得补写标记。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=temp_dir)
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            cached_file = cache_dir / "App.exe"
+            cached_file.write_bytes(b"historical-cache")
+            marker_path = root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+
+            with self.assertRaises(OSError):
+                updater._create_update_cache_marker(cache_dir, temp_dir)
+
+            self.assertTrue(cached_file.exists())
+            self.assertFalse(marker_path.exists())
+
+    def test_create_update_cache_marker_rejects_invalid_existing_marker(self):
+        """已有无效缓存标记时不得下载或改写标记。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=temp_dir)
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            marker_path = root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            marker_path.write_text("invalid", encoding="ascii")
+
+            with self.assertRaises(OSError):
+                updater._create_update_cache_marker(cache_dir, temp_dir)
+
+            self.assertEqual("invalid", marker_path.read_text(encoding="ascii"))
+
+    def test_check_self_update_stops_before_download_for_invalid_marker(self):
+        """缓存标记无效时 check_self_update 应在下载前中止。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=temp_dir)
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            marker_path = root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            marker_path.write_text("invalid", encoding="ascii")
+            release_info = {"tag_name": "v1.2.0"}
+
+            with patch.object(updater, "_check_system_environment", return_value=True), patch.object(
+                    updater,
+                    "_fetch_latest_release",
+                    return_value=release_info,
+            ), patch.object(updater, "_match_asset", return_value=("https://example.invalid/App.exe", "App.exe")), patch.object(
+                    updater,
+                    "_get_asset_sha256",
+                    return_value="a" * 64,
+            ), patch.object(updater, "_fetch_current_release_sha256", return_value=""), patch.object(
+                    updater,
+                    "_download_func",
+            ) as download_func:
+                self.assertFalse(updater.check_self_update())
+
+            download_func.assert_not_called()
 
     def test_clean_update_cache_preserves_junction_and_target(self):
         """缓存内的 junction 与外部目标应保留，普通缓存文件仍清理。"""
@@ -1288,6 +1349,122 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(target_file.exists())
             self.assertTrue(link_file.exists())
             self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
+    def test_cleanup_update_residue_skips_runtime_dir_with_reparse_ancestor_via_mock(self):
+        """运行时目录祖先为重解析点时不得删除残留文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_file = paths["new_file"]
+            runtime_file.write_text("runtime", encoding="utf-8")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(paths["runtime_dir"])
+            state["new_file"] = str(runtime_file)
+            state.save()
+            reparse_ancestor = Path(updater.temp_folder)
+            real_unsafe_path = SelfUpdater._is_unsafe_path.__func__
+
+            def fake_unsafe_path(cls, path):
+                """仅将 runtime_dir 的祖先目录视为重解析点。"""
+                if Path(path) == reparse_ancestor:
+                    return True
+                return real_unsafe_path(cls, path)
+
+            with patch.object(
+                    SelfUpdater,
+                    "_is_unsafe_path",
+                    classmethod(fake_unsafe_path),
+            ), patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                with self.assertLogs("SelfUpdaterTest", level="WARNING"):
+                    updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(runtime_file.exists())
+
+    def test_cleanup_update_residue_skips_residue_with_reparse_ancestor_via_mock(self):
+        """残留文件祖先为重解析点时不得删除该文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            nested_dir = paths["runtime_dir"] / "nested"
+            nested_dir.mkdir()
+            residue_file = nested_dir / "App.new.exe"
+            residue_file.write_text("runtime", encoding="utf-8")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(paths["runtime_dir"])
+            state["new_file"] = str(residue_file)
+            state.save()
+            real_unsafe_path = SelfUpdater._is_unsafe_path.__func__
+
+            def fake_unsafe_path(cls, path):
+                """仅将残留文件父目录视为重解析点。"""
+                if Path(path) == nested_dir:
+                    return True
+                return real_unsafe_path(cls, path)
+
+            with patch.object(
+                    SelfUpdater,
+                    "_is_unsafe_path",
+                    classmethod(fake_unsafe_path),
+            ), patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                with self.assertLogs("SelfUpdaterTest", level="WARNING"):
+                    updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(residue_file.exists())
+
+    def test_cleanup_update_residue_skips_runtime_dir_junction(self):
+        """运行时目录为 Windows junction 时应保留连接与外部残留。"""
+        if not sys.platform.startswith("win"):
+            self.skipTest("仅 Windows 支持 junction")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            program_dir = root / "program"
+            temp_folder = root / "self-update"
+            external_dir = root / "external"
+            program_dir.mkdir()
+            temp_folder.mkdir()
+            external_dir.mkdir()
+            current_exe = program_dir / "App.exe"
+            current_exe.write_bytes(b"old")
+            junction = temp_folder / "v1.2.0"
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(external_dir)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                self.skipTest(f"无法创建 junction: {result.stderr}")
+            residue_file = junction / "App.new.exe"
+            residue_file.write_text("runtime", encoding="utf-8")
+            updater = self.make_updater(temp_folder=str(temp_folder))
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(junction)
+            state["new_file"] = str(residue_file)
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                with self.assertLogs("SelfUpdaterTest", level="WARNING"):
+                    updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(junction.exists())
+            self.assertTrue(residue_file.exists())
+            self.assertTrue((external_dir / "App.new.exe").exists())
 
     def test_is_unsafe_path_accepts_plain_file(self):
         """普通文件应判为安全。"""
@@ -1664,6 +1841,36 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                         )
 
             self.assertIn("删除更新状态文件失败", "\n".join(captured.output))
+
+    def test_remove_marked_cache_contents_logs_rmdir_oserror(self):
+        """缓存空目录删除失败时应记录 warning。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "UpdateCache"
+            cache_dir.mkdir()
+
+            with patch.object(Path, "rmdir", autospec=True, side_effect=OSError("access denied")):
+                with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+                    SelfUpdater._remove_marked_cache_contents(
+                        cache_dir,
+                        logging.getLogger("SelfUpdaterTest"),
+                    )
+
+            self.assertIn("删除缓存目录失败", "\n".join(captured.output))
+
+    def test_remove_empty_directories_logs_rmdir_oserror(self):
+        """残留空目录删除失败时应记录 warning。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_dir = Path(temp_dir) / "runtime"
+            runtime_dir.mkdir()
+
+            with patch.object(Path, "rmdir", autospec=True, side_effect=OSError("access denied")):
+                with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+                    SelfUpdater._remove_empty_directories(
+                        runtime_dir,
+                        logging.getLogger("SelfUpdaterTest"),
+                    )
+
+            self.assertIn("删除空目录失败", "\n".join(captured.output))
 
 
 if __name__ == "__main__":

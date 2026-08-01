@@ -255,11 +255,11 @@ updater._cleanup_update_residue(logger)
 
 ### `SelfUpdater.clean_update_cache(...)`
 
-清理由本模块创建并带有效标记的 `temp_folder/UpdateCache/` 下载缓存。不会扫描版本目录、不会删除 `temp_folder`，且会保留缓存中所有符号链接和 Windows reparse point。无有效标记的历史缓存由调用方自行管理。
+清理由本模块创建并带有效标记的 `temp_folder/UpdateCache/` 下载缓存。首次创建缓存时才会写入标记；已存在但缺少标记的历史缓存，以及标记内容无效、为符号链接或 Windows reparse point 的缓存，都会中止本次下载且不补写标记。不会扫描版本目录、不会删除 `temp_folder`，且会保留缓存中所有符号链接和 Windows reparse point。无有效标记的历史缓存由调用方自行管理。
 
 ### `updater._cleanup_update_residue(logger)`
 
-清理上次成功更新后的残留文件。该方法是实例方法，仅处理位于当前实例 `temp_folder` **内且不等于该根目录**的受控运行时目录；状态文件中指向 `temp_folder` 外部、或等于 `temp_folder` 本身的路径会被跳过。清理逻辑会读取程序目录中的 `update_state.ini`，按其中记录的路径删除 `runtime_dir` 内的 PS1 脚本、lock、新版暂存文件和旧版备份文件；若记录路径或其解析结果为符号链接或 Windows reparse point，则保留该节点及其目标。`update.log` 会保留，最后删除 `update_state.ini`；状态文件删除失败会记录 warning，但不会中断后续启动。
+清理上次成功更新后的残留文件。该方法是实例方法，仅处理位于当前实例 `temp_folder` **内且不等于该根目录**的受控运行时目录；从 `temp_folder` 至 `runtime_dir`、以及从 `runtime_dir` 至每个记录残留文件的所有祖先目录，均必须不是符号链接或 Windows reparse point，否则保留节点及其目标并跳过清理。状态文件中指向 `temp_folder` 外部、或等于 `temp_folder` 本身的路径同样会被跳过。清理逻辑会读取程序目录中的 `update_state.ini`，按其中记录的路径删除 `runtime_dir` 内的 PS1 脚本、lock、新版暂存文件和旧版备份文件。`update.log` 会保留，最后删除 `update_state.ini`；状态文件或空目录删除失败会记录 warning，但不会中断后续启动。
 在程序正常启动时调用，确保 exe 目录保持整洁。
 
 ### `SelfUpdater.rollback(logger=None) -> bool`
