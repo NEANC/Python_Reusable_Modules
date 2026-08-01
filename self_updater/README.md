@@ -202,7 +202,7 @@ if args.update or args.update_force:
     sys.exit(0)
 
 # ── 正常启动：清理上次更新残留 ──
-SelfUpdater._cleanup_update_residue(logger)
+updater._cleanup_update_residue(logger)
 ```
 
 ---

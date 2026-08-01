@@ -590,6 +590,32 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse(runtime_dir.exists())
             self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
 
+    def test_cleanup_update_residue_skips_runtime_dir_outside_temp_folder(self):
+        """状态文件中的外部运行时目录不得被清理。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            external_dir = root / "external"
+            external_dir.mkdir()
+            external_file = external_dir / "App.new.exe"
+            external_file.write_text("external", encoding="utf-8")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(external_dir)
+            state["new_file"] = str(external_file)
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(external_dir.exists())
+            self.assertTrue(external_file.exists())
+
     def test_replace_executable_records_helper_start_failure(self):
         """helper 启动失败时应写入状态文件的 last_error。"""
         with tempfile.TemporaryDirectory() as temp_dir:

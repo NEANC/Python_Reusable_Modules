@@ -889,11 +889,12 @@ class SelfUpdater:
     @staticmethod
     def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> None:
         """删除指定目录树中的空目录。"""
-        if not root_dir.exists():
+        if not root_dir.exists() or SelfUpdater._is_unsafe_directory(root_dir):
             return
 
         empty_dirs = sorted(
-            (path for path in root_dir.rglob("*") if path.is_dir() and not path.is_symlink()),
+            (path for path in root_dir.rglob("*")
+             if path.is_dir() and not SelfUpdater._is_unsafe_directory(path)),
             key=lambda path: len(path.parts),
             reverse=True,
         )
@@ -910,32 +911,29 @@ class SelfUpdater:
         except OSError:
             pass
 
-    @staticmethod
-    def _cleanup_update_residue(logger: Optional[logging.Logger] = None) -> None:
-        """
-        按状态文件记录的精确路径清理上次成功更新后的残留文件。
-
-        Args:
-            logger: 日志记录器
-        """
-        logger = logger or logging.getLogger("SelfUpdater")
+    def _cleanup_update_residue(self, logger: Optional[logging.Logger] = None) -> None:
+        """按受控运行时目录中的精确路径清理上次成功更新残留。"""
+        logger = logger or self.logger
         state = UpdateState.load()
         if not state:
             return
-
-        current_state = state.get("State", "state", fallback="")
-        if current_state != "verified":
+        if state.get("State", "state", fallback="") != "verified":
             return
 
-        logger.info("清理上次更新残留文件...")
         runtime_dir = Path(state["runtime_dir"]) if state["runtime_dir"] else None
-        resolved_runtime_dir = None
-        if runtime_dir:
-            try:
-                resolved_runtime_dir = runtime_dir.resolve()
-            except OSError as e:
-                logger.warning(f"解析运行时目录失败，将跳过残留文件清理: {e}")
+        try:
+            resolved_temp_folder = Path(self.temp_folder).resolve()
+            resolved_runtime_dir = runtime_dir.resolve() if runtime_dir else None
+            if not resolved_runtime_dir:
+                raise ValueError("状态文件未记录运行时目录")
+            resolved_runtime_dir.relative_to(resolved_temp_folder)
+            if self._is_unsafe_directory(runtime_dir):
+                raise ValueError("运行时目录为链接或 reparse point")
+        except (OSError, ValueError) as error:
+            logger.warning(f"跳过不受控运行时目录的残留清理: {error}")
+            resolved_runtime_dir = None
 
+        logger.info("清理上次更新残留文件...")
         cleanup_files = [
             Path(file_path)
             for file_path in (
