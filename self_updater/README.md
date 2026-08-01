@@ -259,7 +259,7 @@ updater._cleanup_update_residue(logger)
 
 ### `updater._cleanup_update_residue(logger)`
 
-清理上次成功更新后的残留文件。该方法是实例方法，仅处理位于当前实例 `temp_folder` **内且不等于该根目录**的受控运行时目录；状态文件中指向 `temp_folder` 外部、或等于 `temp_folder` 本身的路径会被跳过。清理逻辑会读取程序目录中的 `update_state.ini`，按其中记录的路径删除 `runtime_dir` 内的 PS1 脚本、lock、新版暂存文件和旧版备份文件；若记录路径或其解析结果为符号链接或 Windows reparse point，则保留该节点及其目标。`update.log` 会保留，最后删除 `update_state.ini`。
+清理上次成功更新后的残留文件。该方法是实例方法，仅处理位于当前实例 `temp_folder` **内且不等于该根目录**的受控运行时目录；状态文件中指向 `temp_folder` 外部、或等于 `temp_folder` 本身的路径会被跳过。清理逻辑会读取程序目录中的 `update_state.ini`，按其中记录的路径删除 `runtime_dir` 内的 PS1 脚本、lock、新版暂存文件和旧版备份文件；若记录路径或其解析结果为符号链接或 Windows reparse point，则保留该节点及其目标。`update.log` 会保留，最后删除 `update_state.ini`；状态文件删除失败会记录 warning，但不会中断后续启动。
 在程序正常启动时调用，确保 exe 目录保持整洁。
 
 ### `SelfUpdater.rollback(logger=None) -> bool`
