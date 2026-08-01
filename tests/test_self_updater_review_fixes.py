@@ -1143,7 +1143,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             updater = self.make_updater(temp_folder=temp_dir)
             cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
 
-            marker_path = updater._create_update_cache_marker(cache_dir)
+            marker_path = updater._create_update_cache_marker(cache_dir, temp_dir)
 
             self.assertEqual(
                 root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE,
@@ -1164,7 +1164,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             cached_file = cache_dir / "App.exe"
             cached_file.write_bytes(b"cache")
 
-            updater._create_update_cache_marker(cache_dir)
+            updater._create_update_cache_marker(cache_dir, temp_dir)
 
             SelfUpdater.clean_update_cache(
                 str(root),
@@ -1209,7 +1209,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     side_effect=fake_is_symlink,
             ):
                 with self.assertRaises(OSError):
-                    updater._create_update_cache_marker(cache_dir)
+                    updater._create_update_cache_marker(cache_dir, temp_dir)
 
             self.assertFalse(marker_path.exists())
             self.assertFalse(dangling_target.exists())
@@ -1219,10 +1219,10 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             updater = self.make_updater(temp_folder=temp_dir)
             cache_dir = Path(temp_dir) / "UpdateCache" / "installs" / "v1.2.0"
-            marker_path = updater._create_update_cache_marker(cache_dir)
+            marker_path = updater._create_update_cache_marker(cache_dir, temp_dir)
             marker_path.write_text("tampered", encoding="ascii")
 
-            updater._create_update_cache_marker(cache_dir)
+            updater._create_update_cache_marker(cache_dir, temp_dir)
 
             self.assertEqual("tampered", marker_path.read_text(encoding="ascii"))
 
@@ -1304,6 +1304,97 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
             self.assertTrue(SelfUpdater._is_unsafe_path(missing_path))
 
+    def test_create_update_cache_marker_rejects_link_ancestor(self):
+        """UpdateCache 祖先路径为链接或重解析点时不应写入标记。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            external_dir = root / "external"
+            external_dir.mkdir()
+
+            real_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(self):
+                """将 UpdateCache 目录视为符号链接。"""
+                if str(self) == str(root / "UpdateCache"):
+                    return True
+                return real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                with self.assertRaises(OSError):
+                    updater._create_update_cache_marker(cache_dir, temp_dir)
+
+            self.assertFalse(
+                (external_dir / "installs").exists(),
+                "不应在外部目录创建子目录",
+            )
+            self.assertFalse(
+                (root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE).exists(),
+            )
+
+    def test_create_update_cache_marker_rejects_link_install_dir(self):
+        """installs 目录为链接或重解析点时不应写入标记。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            marker_path = root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+
+            real_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(self):
+                """将 installs 目录视为符号链接。"""
+                if str(self) == str(root / "UpdateCache" / "installs"):
+                    return True
+                return real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                with self.assertRaises(OSError):
+                    updater._create_update_cache_marker(cache_dir, temp_dir)
+
+            self.assertFalse(marker_path.exists())
+
+    def test_create_update_cache_marker_rejects_link_cache_dir(self):
+        """版本缓存目录为链接或重解析点时不应写入标记。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            marker_path = root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+
+            real_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(self):
+                """将版本缓存目录视为符号链接。"""
+                if str(self) == str(cache_dir):
+                    return True
+                return real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                with self.assertRaises(OSError):
+                    updater._create_update_cache_marker(cache_dir, temp_dir)
+
+            self.assertFalse(marker_path.exists())
+
     def test_create_update_cache_marker_rejects_link_marker(self):
         """缓存标记路径为链接或重解析点时不应写入。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1319,7 +1410,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 self.skipTest(f"当前环境无法创建符号链接: {error}")
 
             with self.assertRaises(OSError):
-                updater._create_update_cache_marker(cache_dir)
+                updater._create_update_cache_marker(cache_dir, temp_dir)
 
             self.assertEqual("outside", external_target.read_text(encoding="utf-8"))
 
@@ -1408,7 +1499,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     side_effect=fake_is_symlink,
             ):
                 with self.assertRaises(OSError):
-                    updater._create_update_cache_marker(cache_dir)
+                    updater._create_update_cache_marker(cache_dir, temp_dir)
 
             self.assertEqual("tampered", marker_path.read_text(encoding="ascii"))
 

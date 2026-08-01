@@ -436,7 +436,7 @@ class SelfUpdater:
                 return False
 
             cache_dir = Path(self.temp_folder) / "UpdateCache" / "installs" / latest_version
-            self._create_update_cache_marker(cache_dir)
+            self._create_update_cache_marker(cache_dir, self.temp_folder)
             tmp_path = cache_dir / f"{self.app_name}-{latest_version}.exe"
             sha_path = cache_dir / f"{self.app_name}-{latest_version}.sha256"
 
@@ -841,14 +841,46 @@ class SelfUpdater:
         )
 
     @classmethod
-    def _create_update_cache_marker(cls, cache_dir: Path) -> Path:
+    def _validate_cache_ancestors(cls, cache_dir: Path, temp_folder: Path) -> Path:
+        """验证缓存祖先路径均为普通目录，返回受控的 UpdateCache 根目录。
+
+        从受信任的 temp_folder 逐级检查 UpdateCache、installs 与版本缓存目录；
+        任一路径为符号链接或 reparse point 时抛出 OSError，避免越界写入。
+        """
+        try:
+            resolved_temp = temp_folder.resolve()
+            cache_dir.resolve().relative_to(resolved_temp)
+        except (OSError, ValueError) as error:
+            raise OSError(f"缓存目录不在受控临时目录内: {cache_dir}") from error
+
+        cache_root = resolved_temp / "UpdateCache"
+        installs_dir = cache_root / "installs"
+        for ancestor in (cache_root, installs_dir, cache_dir):
+            try:
+                ancestor.lstat()
+            except FileNotFoundError:
+                continue
+            if cls._is_unsafe_path(ancestor):
+                raise OSError(f"缓存祖先路径为链接或重解析点: {ancestor}")
+        return cache_root
+
+    @classmethod
+    def _create_update_cache_marker(
+            cls,
+            cache_dir: Path,
+            temp_folder: Optional[str] = None,
+    ) -> Path:
         """创建缓存标记文件，返回标记路径。
 
         标记路径若已存在且是链接或 reparse point，直接拒绝，避免跟随外部目标；
         悬空链接使用 lstat 检测节点存在性，不依赖目标路径是否存在。
+        祖先路径（UpdateCache、installs、版本目录）为链接或 reparse point 时拒绝。
         """
+        if temp_folder is None:
+            raise OSError("缺少临时目录，无法校验缓存祖先路径")
+        cache_root = cls._validate_cache_ancestors(cache_dir, Path(temp_folder))
         cache_dir.mkdir(parents=True, exist_ok=True)
-        marker_path = cache_dir.parent.parent / cls._UPDATE_CACHE_MARKER_FILE
+        marker_path = cache_root / cls._UPDATE_CACHE_MARKER_FILE
         try:
             marker_path.lstat()
         except FileNotFoundError:
@@ -874,7 +906,13 @@ class SelfUpdater:
             logger.warning(f"跳过不安全缓存目录: {cache_dir}")
             return
 
-        for child_path in cache_dir.iterdir():
+        try:
+            children = list(cache_dir.iterdir())
+        except OSError as error:
+            logger.warning(f"枚举缓存目录失败，已跳过: {cache_dir}, {error}")
+            return
+
+        for child_path in children:
             if cls._is_unsafe_path(child_path):
                 logger.warning(f"保留不安全缓存链接: {child_path}")
                 continue
@@ -899,7 +937,13 @@ class SelfUpdater:
         if not root_dir.exists() or SelfUpdater._is_unsafe_path(root_dir):
             return
 
-        for child_path in root_dir.iterdir():
+        try:
+            children = list(root_dir.iterdir())
+        except OSError as error:
+            logger.warning(f"枚举目录失败，已跳过: {root_dir}, {error}")
+            return
+
+        for child_path in children:
             if not child_path.is_dir():
                 continue
             if SelfUpdater._is_unsafe_path(child_path):
@@ -924,15 +968,15 @@ class SelfUpdater:
 
         runtime_dir = Path(state["runtime_dir"]) if state["runtime_dir"] else None
         try:
-            resolved_temp_folder = Path(self.temp_folder).resolve()
-            resolved_runtime_dir = runtime_dir.resolve() if runtime_dir else None
-            if not resolved_runtime_dir:
+            if not runtime_dir:
                 raise ValueError("状态文件未记录运行时目录")
+            if self._is_unsafe_path(runtime_dir):
+                raise ValueError("运行时目录为链接或 reparse point")
+            resolved_temp_folder = Path(self.temp_folder).resolve()
+            resolved_runtime_dir = runtime_dir.resolve()
             resolved_runtime_dir.relative_to(resolved_temp_folder)
             if resolved_runtime_dir == resolved_temp_folder:
                 raise ValueError("运行时目录不能等于临时目录")
-            if self._is_unsafe_path(runtime_dir):
-                raise ValueError("运行时目录为链接或 reparse point")
         except (OSError, ValueError) as error:
             logger.warning(f"跳过不受控运行时目录的残留清理: {error}")
             resolved_runtime_dir = None
@@ -980,8 +1024,8 @@ class SelfUpdater:
         # 最后删除状态文件自身
         try:
             state.delete()
-        except Exception:
-            pass
+        except OSError as error:
+            logger.warning(f"删除更新状态文件失败: {error}")
 
     @staticmethod
     def clean_update_cache(temp_folder: str, logger: logging.Logger) -> None:
