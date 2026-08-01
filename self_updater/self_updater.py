@@ -69,6 +69,7 @@ class SelfUpdater:
     _UPDATE_CACHE_MARKER_FILE = ".self_updater_cache"
     _UPDATE_CACHE_MARKER_CONTENT = "self_updater_update_cache_v1\n"
     _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
                  current_version: str, proxy: str,
                  logger: logging.Logger,

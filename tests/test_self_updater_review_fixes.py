@@ -876,6 +876,40 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(SelfUpdater._is_unsafe_directory(link))
             self.assertFalse(SelfUpdater._is_unsafe_directory(target))
 
+    def test_is_unsafe_directory_detects_symlink(self):
+        """is_symlink 返回 True 的路径应被判为不安全。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "dir"
+            path.mkdir()
+            with patch.object(Path, "is_symlink", return_value=True):
+                self.assertTrue(SelfUpdater._is_unsafe_directory(path))
+
+    def test_is_unsafe_directory_detects_reparse_point_flag(self):
+        """含 Windows reparse point 标志的目录应被判为不安全。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "dir"
+            path.mkdir()
+            fake_stat = Mock(st_file_attributes=SelfUpdater._FILE_ATTRIBUTE_REPARSE_POINT)
+            with patch.object(Path, "is_symlink", return_value=False), \
+                    patch.object(Path, "lstat", return_value=fake_stat):
+                self.assertTrue(SelfUpdater._is_unsafe_directory(path))
+
+    def test_is_unsafe_directory_returns_true_when_lstat_fails(self):
+        """lstat 抛 OSError 时应保守判为不安全。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "dir"
+            path.mkdir()
+            with patch.object(Path, "lstat", side_effect=OSError("lstat failed")):
+                self.assertTrue(SelfUpdater._is_unsafe_directory(path))
+
+    def test_is_unsafe_directory_accepts_plain_directory(self):
+        """普通目录（非符号链接、无 reparse point 位）应判为安全。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "dir"
+            path.mkdir()
+            with patch.object(Path, "is_symlink", return_value=False):
+                self.assertFalse(SelfUpdater._is_unsafe_directory(path))
+
 
 if __name__ == "__main__":
     unittest.main()
