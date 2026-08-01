@@ -930,8 +930,8 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             except OSError as error:
                 self.skipTest(f"当前环境无法创建符号链接: {error}")
 
-            self.assertTrue(SelfUpdater._is_unsafe_directory(link))
-            self.assertFalse(SelfUpdater._is_unsafe_directory(target))
+            self.assertTrue(SelfUpdater._is_unsafe_path(link))
+            self.assertFalse(SelfUpdater._is_unsafe_path(target))
 
     def test_remove_empty_directories_does_not_follow_junction(self):
         """空目录清理不应跟随 junction 删除外部目标内容。"""
@@ -966,7 +966,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             path = Path(temp_dir) / "dir"
             path.mkdir()
             with patch.object(Path, "is_symlink", return_value=True):
-                self.assertTrue(SelfUpdater._is_unsafe_directory(path))
+                self.assertTrue(SelfUpdater._is_unsafe_path(path))
 
     def test_is_unsafe_directory_detects_reparse_point_flag(self):
         """含 Windows reparse point 标志的目录应被判为不安全。"""
@@ -976,7 +976,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             fake_stat = Mock(st_file_attributes=SelfUpdater._FILE_ATTRIBUTE_REPARSE_POINT)
             with patch.object(Path, "is_symlink", return_value=False), \
                     patch.object(Path, "lstat", return_value=fake_stat):
-                self.assertTrue(SelfUpdater._is_unsafe_directory(path))
+                self.assertTrue(SelfUpdater._is_unsafe_path(path))
 
     def test_is_unsafe_directory_returns_true_when_lstat_fails(self):
         """lstat 抛 OSError 时应保守判为不安全。"""
@@ -984,7 +984,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             path = Path(temp_dir) / "dir"
             path.mkdir()
             with patch.object(Path, "lstat", side_effect=OSError("lstat failed")):
-                self.assertTrue(SelfUpdater._is_unsafe_directory(path))
+                self.assertTrue(SelfUpdater._is_unsafe_path(path))
 
     def test_is_unsafe_directory_accepts_plain_directory(self):
         """普通目录（非符号链接、无 reparse point 位）应判为安全。"""
@@ -992,7 +992,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             path = Path(temp_dir) / "dir"
             path.mkdir()
             with patch.object(Path, "is_symlink", return_value=False):
-                self.assertFalse(SelfUpdater._is_unsafe_directory(path))
+                self.assertFalse(SelfUpdater._is_unsafe_path(path))
 
     def test_clean_update_cache_removes_only_marked_cache(self):
         """仅带有效标记的 UpdateCache 应被清理。"""
@@ -1198,6 +1198,129 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(target_file.exists())
             self.assertTrue(link_file.exists())
             self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
+    def test_is_unsafe_path_accepts_plain_file(self):
+        """普通文件应判为安全。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "file.txt"
+            file_path.write_text("data", encoding="utf-8")
+
+            self.assertFalse(SelfUpdater._is_unsafe_path(file_path))
+
+    def test_is_unsafe_path_rejects_missing_path(self):
+        """不存在的路径应保守判为不安全。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_path = Path(temp_dir) / "missing"
+
+            self.assertTrue(SelfUpdater._is_unsafe_path(missing_path))
+
+    def test_create_update_cache_marker_rejects_link_marker(self):
+        """缓存标记路径为链接或重解析点时不应写入。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater = self.make_updater(temp_folder=temp_dir)
+            cache_dir = Path(temp_dir) / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            marker_path = cache_dir.parent.parent / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            external_target = Path(temp_dir) / "external-target"
+            external_target.write_text("outside", encoding="utf-8")
+            try:
+                marker_path.symlink_to(external_target)
+            except OSError as error:
+                self.skipTest(f"当前环境无法创建符号链接: {error}")
+
+            with self.assertRaises(OSError):
+                updater._create_update_cache_marker(cache_dir)
+
+            self.assertEqual("outside", external_target.read_text(encoding="utf-8"))
+
+    def test_clean_update_cache_skips_link_marker(self):
+        """缓存标记为链接或重解析点时不应清理缓存。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / "UpdateCache"
+            cache_dir.mkdir()
+            external_target = root / "external-target"
+            external_target.write_text(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            cached_file = cache_dir / "App.exe"
+            cached_file.write_bytes(b"cache")
+            marker_path = cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            try:
+                marker_path.symlink_to(external_target)
+            except OSError as error:
+                self.skipTest(f"当前环境无法创建符号链接: {error}")
+
+            with self.assertLogs("SelfUpdaterTest", level="WARNING"):
+                SelfUpdater.clean_update_cache(
+                    str(root),
+                    logging.getLogger("SelfUpdaterTest"),
+                )
+
+            self.assertTrue(cached_file.exists())
+            self.assertEqual(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                external_target.read_text(encoding="ascii"),
+            )
+
+    def test_clean_update_cache_skips_link_marker_via_mock(self):
+        """is_symlink 返回 True 的缓存标记应跳过清理（mock 验证链接分支）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / "UpdateCache"
+            cache_dir.mkdir()
+            cached_file = cache_dir / "App.exe"
+            cached_file.write_bytes(b"cache")
+            marker_path = cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            marker_path.write_text("tampered", encoding="ascii")
+
+            real_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(self):
+                """仅对标记路径返回 True。"""
+                return str(self) == str(marker_path) or real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                with self.assertLogs("SelfUpdaterTest", level="WARNING"):
+                    SelfUpdater.clean_update_cache(
+                        str(root),
+                        logging.getLogger("SelfUpdaterTest"),
+                    )
+
+            self.assertTrue(cached_file.exists())
+
+    def test_create_update_cache_marker_rejects_link_marker_via_mock(self):
+        """is_symlink 返回 True 的标记路径应拒绝写入（mock 验证链接分支）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            cache_dir.mkdir(parents=True)
+            marker_path = cache_dir.parent.parent / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            marker_path.write_text("tampered", encoding="ascii")
+
+            real_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(self):
+                """仅对标记路径返回 True。"""
+                return str(self) == str(marker_path) or real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                with self.assertRaises(OSError):
+                    updater._create_update_cache_marker(cache_dir)
+
+            self.assertEqual("tampered", marker_path.read_text(encoding="ascii"))
 
 
 if __name__ == "__main__":

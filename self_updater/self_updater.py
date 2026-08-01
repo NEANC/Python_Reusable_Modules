@@ -830,7 +830,7 @@ class SelfUpdater:
         return 0
 
     @classmethod
-    def _is_unsafe_directory(cls, path: Path) -> bool:
+    def _is_unsafe_path(cls, path: Path) -> bool:
         """判断路径（文件或目录）是否为符号链接或 Windows reparse point。"""
         try:
             attributes = getattr(path.lstat(), "st_file_attributes", 0)
@@ -844,10 +844,12 @@ class SelfUpdater:
     def _create_update_cache_marker(cls, cache_dir: Path) -> Path:
         """创建缓存标记文件，返回标记路径。
 
-        使用独占创建避免并发进程争用同一临时文件；标记已存在时不覆盖。
+        标记路径若已存在且是链接或 reparse point，直接拒绝，避免跟随外部目标。
         """
         cache_dir.mkdir(parents=True, exist_ok=True)
         marker_path = cache_dir.parent.parent / cls._UPDATE_CACHE_MARKER_FILE
+        if marker_path.exists() and cls._is_unsafe_path(marker_path):
+            raise OSError(f"缓存标记路径为链接或重解析点: {marker_path}")
         try:
             with marker_path.open("x", encoding="ascii") as marker_file:
                 marker_file.write(cls._UPDATE_CACHE_MARKER_CONTENT)
@@ -862,12 +864,12 @@ class SelfUpdater:
             logger: logging.Logger,
     ) -> None:
         """删除缓存中的普通文件和目录，保留链接与 reparse point。"""
-        if cls._is_unsafe_directory(cache_dir):
+        if cls._is_unsafe_path(cache_dir):
             logger.warning(f"跳过不安全缓存目录: {cache_dir}")
             return
 
         for child_path in cache_dir.iterdir():
-            if cls._is_unsafe_directory(child_path):
+            if cls._is_unsafe_path(child_path):
                 logger.warning(f"保留不安全缓存链接: {child_path}")
                 continue
             if child_path.is_dir():
@@ -879,7 +881,7 @@ class SelfUpdater:
                 logger.warning(f"清理缓存文件失败，已跳过: {child_path}, {error}")
 
         try:
-            if not cls._is_unsafe_directory(cache_dir):
+            if not cls._is_unsafe_path(cache_dir):
                 cache_dir.rmdir()
                 logger.info("已清理自更新缓存目录")
         except OSError:
@@ -888,18 +890,18 @@ class SelfUpdater:
     @staticmethod
     def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> None:
         """删除指定目录树中的空目录，不跟随符号链接或 reparse point。"""
-        if not root_dir.exists() or SelfUpdater._is_unsafe_directory(root_dir):
+        if not root_dir.exists() or SelfUpdater._is_unsafe_path(root_dir):
             return
 
         for child_path in root_dir.iterdir():
             if not child_path.is_dir():
                 continue
-            if SelfUpdater._is_unsafe_directory(child_path):
+            if SelfUpdater._is_unsafe_path(child_path):
                 continue
             SelfUpdater._remove_empty_directories(child_path, logger)
 
         try:
-            if not SelfUpdater._is_unsafe_directory(root_dir):
+            if not SelfUpdater._is_unsafe_path(root_dir):
                 root_dir.rmdir()
                 logger.debug(f"已删除空目录: {root_dir}")
         except OSError:
@@ -921,7 +923,7 @@ class SelfUpdater:
             if not resolved_runtime_dir:
                 raise ValueError("状态文件未记录运行时目录")
             resolved_runtime_dir.relative_to(resolved_temp_folder)
-            if self._is_unsafe_directory(runtime_dir):
+            if self._is_unsafe_path(runtime_dir):
                 raise ValueError("运行时目录为链接或 reparse point")
         except (OSError, ValueError) as error:
             logger.warning(f"跳过不受控运行时目录的残留清理: {error}")
@@ -945,7 +947,7 @@ class SelfUpdater:
                 if not resolved_runtime_dir:
                     logger.warning(f"跳过运行时目录外的残留文件: {file_path}")
                     continue
-                if self._is_unsafe_directory(file_path):
+                if self._is_unsafe_path(file_path):
                     logger.warning(f"跳过链接或重解析残留文件: {file_path}")
                     continue
                 resolved_file_path = file_path.resolve()
@@ -954,9 +956,13 @@ class SelfUpdater:
                 except ValueError:
                     logger.warning(f"跳过运行时目录外的残留文件: {file_path}")
                     continue
-                if resolved_file_path.exists():
-                    resolved_file_path.unlink()
-                    logger.debug(f"已删除残留文件: {resolved_file_path}")
+                if not resolved_file_path.exists():
+                    continue
+                if self._is_unsafe_path(resolved_file_path):
+                    logger.warning(f"跳过解析后为链接或重解析的残留文件: {file_path}")
+                    continue
+                resolved_file_path.unlink()
+                logger.debug(f"已删除残留文件: {resolved_file_path}")
             except OSError as e:
                 logger.warning(f"清理残留文件失败，已跳过: {file_path}, {e}")
 
@@ -981,18 +987,21 @@ class SelfUpdater:
         temp_path = Path(temp_folder)
         if not temp_path.exists():
             return
-        if not temp_path.is_dir() or SelfUpdater._is_unsafe_directory(temp_path):
+        if not temp_path.is_dir() or SelfUpdater._is_unsafe_path(temp_path):
             logger.warning(f"跳过不安全的临时目录: {temp_path}")
             return
 
         cache_dir = temp_path / "UpdateCache"
         if not cache_dir.exists():
             return
-        if not cache_dir.is_dir() or SelfUpdater._is_unsafe_directory(cache_dir):
+        if not cache_dir.is_dir() or SelfUpdater._is_unsafe_path(cache_dir):
             logger.warning(f"跳过不安全的缓存目录: {cache_dir}")
             return
 
         marker_path = cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+        if SelfUpdater._is_unsafe_path(marker_path):
+            logger.warning(f"跳过链接或重解析的缓存标记: {marker_path}")
+            return
         try:
             marker_content = marker_path.read_text(encoding="ascii")
         except (OSError, UnicodeDecodeError):
