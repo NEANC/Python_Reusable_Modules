@@ -888,22 +888,16 @@ class SelfUpdater:
 
     @staticmethod
     def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> None:
-        """删除指定目录树中的空目录。"""
+        """删除指定目录树中的空目录，不跟随符号链接或 reparse point。"""
         if not root_dir.exists() or SelfUpdater._is_unsafe_directory(root_dir):
             return
 
-        empty_dirs = sorted(
-            (path for path in root_dir.rglob("*")
-             if path.is_dir() and not SelfUpdater._is_unsafe_directory(path)),
-            key=lambda path: len(path.parts),
-            reverse=True,
-        )
-        for dir_path in empty_dirs:
-            try:
-                dir_path.rmdir()
-                logger.debug(f"已删除空目录: {dir_path}")
-            except OSError:
-                pass
+        for child_path in root_dir.iterdir():
+            if not child_path.is_dir():
+                continue
+            if SelfUpdater._is_unsafe_directory(child_path):
+                continue
+            SelfUpdater._remove_empty_directories(child_path, logger)
 
         try:
             root_dir.rmdir()

@@ -6,6 +6,8 @@
 import hashlib
 import inspect
 import logging
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -931,6 +933,33 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(SelfUpdater._is_unsafe_directory(link))
             self.assertFalse(SelfUpdater._is_unsafe_directory(target))
 
+    def test_remove_empty_directories_does_not_follow_junction(self):
+        """空目录清理不应跟随 junction 删除外部目标内容。"""
+        if not sys.platform.startswith("win"):
+            self.skipTest("仅 Windows 支持 junction")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_dir = root / "runtime"
+            runtime_dir.mkdir()
+            external_target = root / "external_target"
+            (external_target / "empty_sub").mkdir(parents=True)
+            junction = runtime_dir / "junction"
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(external_target)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                self.skipTest(f"无法创建 junction: {result.stderr}")
+
+            SelfUpdater._remove_empty_directories(
+                runtime_dir,
+                logging.getLogger("SelfUpdaterTest"),
+            )
+
+            self.assertTrue((external_target / "empty_sub").exists())
+            self.assertTrue(junction.exists())
+
     def test_is_unsafe_directory_detects_symlink(self):
         """is_symlink 返回 True 的路径应被判为不安全。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -991,6 +1020,23 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_dir = Path(temp_dir) / "UpdateCache"
             cache_dir.mkdir()
+            cached_file = cache_dir / "App.exe"
+            cached_file.write_bytes(b"cache")
+
+            with self.assertLogs("SelfUpdaterTest", level="WARNING"):
+                SelfUpdater.clean_update_cache(temp_dir, logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(cached_file.exists())
+
+    def test_clean_update_cache_skips_invalid_marker(self):
+        """标记内容无效的 UpdateCache 不应被清理。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "UpdateCache"
+            cache_dir.mkdir()
+            (cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE).write_text(
+                "invalid-marker-content",
+                encoding="ascii",
+            )
             cached_file = cache_dir / "App.exe"
             cached_file.write_bytes(b"cache")
 
