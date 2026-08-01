@@ -1124,6 +1124,81 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 marker_path.read_text(encoding="ascii"),
             )
 
+    def test_create_update_cache_marker_is_idempotent(self):
+        """重复创建缓存标记不应覆盖已有标记。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater = self.make_updater(temp_folder=temp_dir)
+            cache_dir = Path(temp_dir) / "UpdateCache" / "installs" / "v1.2.0"
+            marker_path = updater._create_update_cache_marker(cache_dir)
+            marker_path.write_text("tampered", encoding="ascii")
+
+            updater._create_update_cache_marker(cache_dir)
+
+            self.assertEqual("tampered", marker_path.read_text(encoding="ascii"))
+
+    def test_clean_update_cache_preserves_junction_and_target(self):
+        """缓存内的 junction 与外部目标应保留，普通缓存文件仍清理。"""
+        if not sys.platform.startswith("win"):
+            self.skipTest("仅 Windows 支持 junction")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / "UpdateCache"
+            external_dir = root / "external"
+            cache_dir.mkdir()
+            external_dir.mkdir()
+            (external_dir / "keep.txt").write_text("keep", encoding="utf-8")
+            (cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE).write_text(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            (cache_dir / "delete.txt").write_text("delete", encoding="utf-8")
+            junction = cache_dir / "external-junction"
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(external_dir)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                self.skipTest(f"无法创建 junction: {result.stderr}")
+
+            SelfUpdater.clean_update_cache(str(root), logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(junction.exists())
+            self.assertTrue((external_dir / "keep.txt").exists())
+            self.assertFalse((cache_dir / "delete.txt").exists())
+            self.assertTrue(cache_dir.exists())
+
+    def test_cleanup_update_residue_skips_symlink_residue_file(self):
+        """残留文件为符号链接时应保留链接节点与目标文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            target_file = runtime_dir / "App.new.exe"
+            target_file.write_text("target", encoding="utf-8")
+            link_file = runtime_dir / "App.link.exe"
+            try:
+                link_file.symlink_to(target_file)
+            except OSError as error:
+                self.skipTest(f"当前环境无法创建符号链接: {error}")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(link_file)
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(target_file.exists())
+            self.assertTrue(link_file.exists())
+            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

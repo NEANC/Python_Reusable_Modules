@@ -831,7 +831,7 @@ class SelfUpdater:
 
     @classmethod
     def _is_unsafe_directory(cls, path: Path) -> bool:
-        """判断目录是否为符号链接或 Windows reparse point。"""
+        """判断路径（文件或目录）是否为符号链接或 Windows reparse point。"""
         try:
             attributes = getattr(path.lstat(), "st_file_attributes", 0)
         except OSError:
@@ -842,16 +842,17 @@ class SelfUpdater:
 
     @classmethod
     def _create_update_cache_marker(cls, cache_dir: Path) -> Path:
-        """创建缓存标记文件，返回标记路径。"""
+        """创建缓存标记文件，返回标记路径。
+
+        使用独占创建避免并发进程争用同一临时文件；标记已存在时不覆盖。
+        """
         cache_dir.mkdir(parents=True, exist_ok=True)
         marker_path = cache_dir.parent.parent / cls._UPDATE_CACHE_MARKER_FILE
-        if not marker_path.exists():
-            marker_tmp_path = marker_path.with_suffix(".tmp")
-            marker_tmp_path.write_text(
-                cls._UPDATE_CACHE_MARKER_CONTENT,
-                encoding="ascii",
-            )
-            marker_tmp_path.replace(marker_path)
+        try:
+            with marker_path.open("x", encoding="ascii") as marker_file:
+                marker_file.write(cls._UPDATE_CACHE_MARKER_CONTENT)
+        except FileExistsError:
+            pass
         return marker_path
 
     @classmethod
@@ -866,13 +867,10 @@ class SelfUpdater:
             return
 
         for child_path in cache_dir.iterdir():
-            if child_path.is_symlink():
+            if cls._is_unsafe_directory(child_path):
                 logger.warning(f"保留不安全缓存链接: {child_path}")
                 continue
             if child_path.is_dir():
-                if cls._is_unsafe_directory(child_path):
-                    logger.warning(f"保留不安全缓存目录: {child_path}")
-                    continue
                 cls._remove_marked_cache_contents(child_path, logger)
                 continue
             try:
@@ -881,8 +879,9 @@ class SelfUpdater:
                 logger.warning(f"清理缓存文件失败，已跳过: {child_path}, {error}")
 
         try:
-            cache_dir.rmdir()
-            logger.info("已清理自更新缓存目录")
+            if not cls._is_unsafe_directory(cache_dir):
+                cache_dir.rmdir()
+                logger.info("已清理自更新缓存目录")
         except OSError:
             pass
 
@@ -900,8 +899,9 @@ class SelfUpdater:
             SelfUpdater._remove_empty_directories(child_path, logger)
 
         try:
-            root_dir.rmdir()
-            logger.debug(f"已删除空目录: {root_dir}")
+            if not SelfUpdater._is_unsafe_directory(root_dir):
+                root_dir.rmdir()
+                logger.debug(f"已删除空目录: {root_dir}")
         except OSError:
             pass
 
@@ -944,6 +944,9 @@ class SelfUpdater:
             try:
                 if not resolved_runtime_dir:
                     logger.warning(f"跳过运行时目录外的残留文件: {file_path}")
+                    continue
+                if self._is_unsafe_directory(file_path):
+                    logger.warning(f"跳过链接或重解析残留文件: {file_path}")
                     continue
                 resolved_file_path = file_path.resolve()
                 try:
