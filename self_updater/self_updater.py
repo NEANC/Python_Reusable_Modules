@@ -1000,7 +1000,7 @@ class SelfUpdater:
         marker_path = cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE
         try:
             marker_content = marker_path.read_text(encoding="ascii")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             marker_content = ""
         if marker_content != SelfUpdater._UPDATE_CACHE_MARKER_CONTENT:
             logger.warning(f"缓存目录缺少有效标记，跳过清理: {cache_dir}")

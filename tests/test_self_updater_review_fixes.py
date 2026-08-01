@@ -971,6 +971,41 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertFalse((cache_dir / "delete.txt").exists())
             self.assertTrue(cache_dir.exists())
 
+    def test_clean_update_cache_preserves_symlink_child_via_mock(self):
+        """is_symlink 返回 True 的缓存子项应被保留（mock 验证链接分支）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / "UpdateCache"
+            cache_dir.mkdir()
+            (cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE).write_text(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            fake_link = cache_dir / "fake-link"
+            fake_link.write_bytes(b"payload")
+            (cache_dir / "delete.txt").write_text("delete", encoding="utf-8")
+
+            real_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(self):
+                """仅对 fake-link 路径返回 True。"""
+                return str(self) == str(fake_link) or real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                SelfUpdater.clean_update_cache(
+                    str(root),
+                    logging.getLogger("SelfUpdaterTest"),
+                )
+
+            self.assertTrue(fake_link.exists())
+            self.assertFalse((cache_dir / "delete.txt").exists())
+            self.assertTrue(cache_dir.exists())
+
     def test_create_update_cache_writes_marker_before_download(self):
         """新建下载缓存时应写入有效标记文件。"""
         with tempfile.TemporaryDirectory() as temp_dir:
