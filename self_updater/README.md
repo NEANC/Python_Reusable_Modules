@@ -243,11 +243,11 @@ updater._cleanup_update_residue(logger)
 
 ### `SelfUpdater.clean_update_cache(...)`
 
-清理自更新下载缓存 `UpdateCache/` 目录。
+清理由本模块创建并带有效标记的 `temp_folder/UpdateCache/` 下载缓存。不会扫描版本目录、不会删除 `temp_folder`，且会保留缓存中所有符号链接和 Windows reparse point。无有效标记的历史缓存由调用方自行管理。
 
-### `SelfUpdater._cleanup_update_residue(logger)`
+### `updater._cleanup_update_residue(logger)`
 
-清理上次成功更新后的残留文件。清理逻辑会读取程序目录中的 `update_state.ini`，按其中记录的绝对路径删除 `runtime_dir` 内的 PS1 脚本、lock、新版暂存文件和旧版备份文件；`update.log` 会保留，最后删除 `update_state.ini`。
+清理上次成功更新后的残留文件。该方法是实例方法，仅处理位于当前实例 `temp_folder` 内的受控运行时目录；状态文件中指向 `temp_folder` 外部的路径会被跳过。清理逻辑会读取程序目录中的 `update_state.ini`，按其中记录的路径删除 `runtime_dir` 内的 PS1 脚本、lock、新版暂存文件和旧版备份文件；`update.log` 会保留，最后删除 `update_state.ini`。
 在程序正常启动时调用，确保 exe 目录保持整洁。
 
 ### `SelfUpdater.rollback(logger=None) -> bool`
