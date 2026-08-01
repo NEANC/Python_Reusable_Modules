@@ -844,31 +844,35 @@ class SelfUpdater:
     def _validate_cache_ancestors(cls, cache_dir: Path, temp_folder: Path) -> Path:
         """验证缓存祖先路径均为普通目录，返回受控的 UpdateCache 根目录。
 
-        从受信任的 temp_folder 逐级检查 UpdateCache、installs 与版本缓存目录；
+        从调用方提供的 temp_folder 逐级检查 UpdateCache、installs 与版本缓存目录；
         任一路径为符号链接或 reparse point 时抛出 OSError，避免越界写入。
         """
-        try:
-            resolved_temp = temp_folder.resolve()
-            cache_dir.resolve().relative_to(resolved_temp)
-        except (OSError, ValueError) as error:
-            raise OSError(f"缓存目录不在受控临时目录内: {cache_dir}") from error
-
-        cache_root = resolved_temp / "UpdateCache"
+        normalized_temp = Path(os.path.abspath(temp_folder))
+        normalized_cache = Path(os.path.abspath(cache_dir))
+        cache_root = normalized_temp / "UpdateCache"
         installs_dir = cache_root / "installs"
-        for ancestor in (cache_root, installs_dir, cache_dir):
-            try:
-                ancestor.lstat()
-            except FileNotFoundError:
-                continue
+        if normalized_cache.parent != installs_dir or not normalized_cache.name:
+            raise OSError(f"缓存目录结构不受控: {cache_dir}")
+
+        normalized_temp.mkdir(parents=True, exist_ok=True)
+        if cls._is_unsafe_path(normalized_temp):
+            raise OSError(f"临时目录为链接或重解析点: {normalized_temp}")
+
+        for ancestor in (cache_root, installs_dir, normalized_cache):
+            ancestor.mkdir(exist_ok=True)
             if cls._is_unsafe_path(ancestor):
                 raise OSError(f"缓存祖先路径为链接或重解析点: {ancestor}")
+
+        for ancestor in (normalized_temp, cache_root, installs_dir, normalized_cache):
+            if cls._is_unsafe_path(ancestor):
+                raise OSError(f"缓存路径复核失败: {ancestor}")
         return cache_root
 
     @classmethod
     def _create_update_cache_marker(
             cls,
             cache_dir: Path,
-            temp_folder: Optional[str] = None,
+            temp_folder: str,
     ) -> Path:
         """创建缓存标记文件，返回标记路径。
 
@@ -876,10 +880,7 @@ class SelfUpdater:
         悬空链接使用 lstat 检测节点存在性，不依赖目标路径是否存在。
         祖先路径（UpdateCache、installs、版本目录）为链接或 reparse point 时拒绝。
         """
-        if temp_folder is None:
-            raise OSError("缺少临时目录，无法校验缓存祖先路径")
         cache_root = cls._validate_cache_ancestors(cache_dir, Path(temp_folder))
-        cache_dir.mkdir(parents=True, exist_ok=True)
         marker_path = cache_root / cls._UPDATE_CACHE_MARKER_FILE
         try:
             marker_path.lstat()

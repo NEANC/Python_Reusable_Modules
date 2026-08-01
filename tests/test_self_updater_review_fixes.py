@@ -1339,6 +1339,105 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 (root / "UpdateCache" / SelfUpdater._UPDATE_CACHE_MARKER_FILE).exists(),
             )
 
+    def test_create_update_cache_marker_rejects_link_temp_folder(self):
+        """原始临时目录为链接或重解析点时不应创建缓存标记。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+            real_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(self):
+                """仅将原始临时目录视为符号链接。"""
+                return str(self) == str(root) or real_is_symlink(self)
+
+            with patch.object(
+                    Path,
+                    "is_symlink",
+                    autospec=True,
+                    side_effect=fake_is_symlink,
+            ):
+                with self.assertRaises(OSError):
+                    updater._create_update_cache_marker(cache_dir, temp_dir)
+
+            self.assertFalse((root / "UpdateCache").exists())
+
+    def test_create_update_cache_marker_rejects_temp_folder_junction(self):
+        """临时目录为 Windows junction 时不得向外部目标写入缓存。"""
+        if not sys.platform.startswith("win"):
+            self.skipTest("仅 Windows 支持 junction")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            external_dir = root / "external"
+            junction = root / "temp-junction"
+            external_dir.mkdir()
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(external_dir)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                self.skipTest(f"无法创建 junction: {result.stderr}")
+            updater = self.make_updater(temp_folder=str(junction))
+            cache_dir = junction / "UpdateCache" / "installs" / "v1.2.0"
+
+            with self.assertRaises(OSError):
+                updater._create_update_cache_marker(cache_dir, str(junction))
+
+            self.assertFalse((external_dir / "UpdateCache").exists())
+
+    def test_create_update_cache_marker_rejects_cache_ancestor_junctions(self):
+        """缓存链中的 Windows junction 均不得导致外部目录写入。"""
+        if not sys.platform.startswith("win"):
+            self.skipTest("仅 Windows 支持 junction")
+        junction_levels = ("UpdateCache", "installs", "version")
+        for level in junction_levels:
+            with self.subTest(level=level), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                external_dir = root / "external"
+                external_dir.mkdir()
+                if level == "UpdateCache":
+                    junction = root / "UpdateCache"
+                elif level == "installs":
+                    (root / "UpdateCache").mkdir()
+                    junction = root / "UpdateCache" / "installs"
+                else:
+                    (root / "UpdateCache" / "installs").mkdir(parents=True)
+                    junction = root / "UpdateCache" / "installs" / "v1.2.0"
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(junction), str(external_dir)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    self.skipTest(f"无法创建 junction: {result.stderr}")
+                updater = self.make_updater(temp_folder=str(root))
+                cache_dir = root / "UpdateCache" / "installs" / "v1.2.0"
+
+                with self.assertRaises(OSError):
+                    updater._create_update_cache_marker(cache_dir, str(root))
+
+                self.assertFalse(
+                    (external_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE).exists(),
+                )
+
+    def test_create_update_cache_marker_rejects_invalid_structure(self):
+        """缓存目录不是 UpdateCache/installs/version 精确结构时应拒绝。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            invalid_paths = (
+                root / "UpdateCache" / "other" / "v1.2.0",
+                root / "UpdateCache" / "installs" / "v1.2.0" / "extra",
+                root / "arbitrary" / "v1.2.0",
+            )
+
+            for cache_dir in invalid_paths:
+                with self.subTest(cache_dir=cache_dir):
+                    with self.assertRaises(OSError):
+                        updater._create_update_cache_marker(cache_dir, temp_dir)
+                    self.assertFalse(cache_dir.exists())
+
     def test_create_update_cache_marker_rejects_link_install_dir(self):
         """installs 目录为链接或重解析点时不应写入标记。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1502,6 +1601,69 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     updater._create_update_cache_marker(cache_dir, temp_dir)
 
             self.assertEqual("tampered", marker_path.read_text(encoding="ascii"))
+
+    def test_remove_marked_cache_contents_logs_iterdir_error(self):
+        """缓存目录枚举失败时应记录 warning 并返回。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "UpdateCache"
+            cache_dir.mkdir()
+            logger = logging.getLogger("SelfUpdaterTest")
+
+            with patch.object(Path, "iterdir", side_effect=OSError("access denied")):
+                with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+                    SelfUpdater._remove_marked_cache_contents(cache_dir, logger)
+
+            self.assertIn("枚举缓存目录失败", "\n".join(captured.output))
+
+    def test_remove_empty_directories_logs_iterdir_error(self):
+        """空目录枚举失败时应记录 warning 并返回。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "runtime"
+            root.mkdir()
+            logger = logging.getLogger("SelfUpdaterTest")
+
+            with patch.object(Path, "iterdir", side_effect=OSError("access denied")):
+                with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+                    SelfUpdater._remove_empty_directories(root, logger)
+
+            self.assertIn("枚举目录失败", "\n".join(captured.output))
+
+    def test_update_state_delete_propagates_oserror(self):
+        """状态文件删除失败时 UpdateState 应将 OSError 传播给调用方。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = UpdateState(base_dir=Path(temp_dir))
+
+            with patch.object(Path, "unlink", side_effect=OSError("access denied")):
+                with self.assertRaises(OSError):
+                    state.delete()
+
+    def test_cleanup_update_residue_logs_state_delete_oserror(self):
+        """残留清理删除状态文件失败时应记录 warning 且不崩溃。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(paths["runtime_dir"])
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                with patch.object(
+                        UpdateState,
+                        "delete",
+                        side_effect=OSError("access denied"),
+                ):
+                    with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+                        updater._cleanup_update_residue(
+                            logging.getLogger("SelfUpdaterTest"),
+                        )
+
+            self.assertIn("删除更新状态文件失败", "\n".join(captured.output))
 
 
 if __name__ == "__main__":
