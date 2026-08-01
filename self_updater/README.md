@@ -255,7 +255,7 @@ updater._cleanup_update_residue(logger)
 
 ### `SelfUpdater.clean_update_cache(...)`
 
-清理由本模块创建并带有效标记的 `temp_folder/UpdateCache/` 下载缓存。首次创建缓存时才会写入标记；已存在但缺少标记的历史缓存，以及标记内容无效、为符号链接或 Windows reparse point 的缓存，都会中止本次下载且不补写标记。不会扫描版本目录、不会删除 `temp_folder`，且会保留缓存中所有符号链接和 Windows reparse point。无有效标记的历史缓存由调用方自行管理。
+清理由本模块创建并带有效标记的 `temp_folder/UpdateCache/installs/` 下载缓存。首次创建根目录时，模块先在 `UpdateCache` 同目录创建唯一临时文件、写入固定内容、`flush` 与 `fsync`，再通过原子且不覆盖既有 marker 的链接发布；因此并发创建时仅一个调用发布，其他调用重新验证已发布 marker。若发布被中断，临时文件会保留且不会成为授权清理对象。任何已存在但缺少 marker、marker 无效、为符号链接或 Windows reparse point 的 `UpdateCache`，都会在创建 `installs/{version}` 前中止本次下载，且目录树不变、不会补写 marker。清理不会扫描版本目录、不会删除 `temp_folder`，只递归删除 `installs/` 下的普通内容；根目录的未知内容、marker 临时残留以及所有符号链接和 Windows reparse point 均保留。无有效 marker 的历史缓存由调用方自行管理。
 
 ### `updater._cleanup_update_residue(logger)`
 
@@ -404,7 +404,7 @@ Helper.ps1 和 Update.ps1 都通过 `Get-SHA256($filePath)` 计算文件哈希�
 2. **`app_name` 安全约束**：`app_name` 是安全应用标识，用于 PS1 脚本名、缓存目录和 User-Agent。仅允许 `A-Za-z0-9_.-`，且拒绝空字符串、路径分隔符、PowerShell/文件名危险字符、纯点号/首尾点号、Windows 保留设备名及其带扩展名形式（如 `CON`、`CON.txt`）。建议使用 `MyApp`、`my-app` 这类稳定标识，不要使用产品显示名。
 3. **Asset 命名规范**：exe asset 文件名必须匹配给定的正则，且包含 `Nuitka` 或 `PyInstaller` 关键字。
 4. **Release 要求**：Release 需提供对应 exe 的 SHA256；优先读取 asset `digest` 中的 `sha256:...`，否则从 release body 中匹配包含文件名的 64 位 SHA256。
-5. **缓存机制**：下载的 exe 缓存到 `{temp_folder}/UpdateCache/installs/{version}/`，下次启动直接复用。
+5. **缓存机制**：下载的 exe 缓存到 `{temp_folder}/UpdateCache/installs/{version}/`，下次启动直接复用。`UpdateCache` 仅能在新建根目录时由模块写入经刷盘并原子发布的 marker；既有根目录必须已有有效普通 marker 才允许创建安装版本目录。
 6. **运行时目录清理**：更新完成前不要手动清理 `runtime_dir`，否则可能导致替换、校验或回滚失败。
 7. **失败禁用**：同一版本连续失败 3 次后标记为 `failed_disabled`，后续自动跳过该版本。
 8. **代理与 SOCKS 支持**：默认下载由 `download` 模块提供，使用 `requests` 执行，SOCKS 是否可用取决于 `requests` 环境是否安装了 SOCKS 支持。GitHub Release API 查询始终由 `requests` 执行。

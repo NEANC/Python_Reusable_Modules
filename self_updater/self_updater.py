@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import requests
@@ -877,7 +878,7 @@ class SelfUpdater:
         if cls._is_unsafe_path(normalized_temp):
             raise OSError(f"临时目录为链接或重解析点: {normalized_temp}")
 
-        for ancestor in (cache_root, installs_dir, normalized_cache):
+        for ancestor in (installs_dir, normalized_cache):
             ancestor.mkdir(exist_ok=True)
             if cls._is_unsafe_path(ancestor):
                 raise OSError(f"缓存祖先路径为链接或重解析点: {ancestor}")
@@ -886,6 +887,54 @@ class SelfUpdater:
             if cls._is_unsafe_path(ancestor):
                 raise OSError(f"缓存路径复核失败: {ancestor}")
         return cache_root
+
+    @classmethod
+    def _validate_existing_cache_marker(cls, cache_root: Path) -> Path:
+        """验证既有缓存根目录及其标记，返回有效标记路径。"""
+        if not cache_root.is_dir() or cls._is_unsafe_path(cache_root):
+            raise OSError(f"缓存根目录不安全: {cache_root}")
+        marker_path = cache_root / cls._UPDATE_CACHE_MARKER_FILE
+        if cls._is_unsafe_path(marker_path):
+            raise OSError(f"缓存标记路径为链接或重解析点: {marker_path}")
+        try:
+            marker_content = marker_path.read_text(encoding="ascii")
+        except (OSError, UnicodeDecodeError) as error:
+            raise OSError(f"缓存标记无效: {marker_path}") from error
+        if marker_content != cls._UPDATE_CACHE_MARKER_CONTENT:
+            raise OSError(f"缓存标记无效: {marker_path}")
+        return marker_path
+
+    @classmethod
+    def _publish_new_cache_marker(cls, cache_root: Path) -> Path:
+        """以同目录临时文件和原子不覆盖链接发布新的缓存标记。"""
+        marker_path = cache_root / cls._UPDATE_CACHE_MARKER_FILE
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="x",
+                    encoding="ascii",
+                    dir=cache_root,
+                    prefix=f"{cls._UPDATE_CACHE_MARKER_FILE}.tmp-",
+                    delete=False,
+            ) as marker_file:
+                temporary_path = Path(marker_file.name)
+                marker_file.write(cls._UPDATE_CACHE_MARKER_CONTENT)
+                marker_file.flush()
+                os.fsync(marker_file.fileno())
+            if cls._is_unsafe_path(temporary_path):
+                raise OSError(f"缓存标记临时路径不安全: {temporary_path}")
+            try:
+                os.link(temporary_path, marker_path)
+            except FileExistsError:
+                return cls._validate_existing_cache_marker(cache_root)
+            return marker_path
+        finally:
+            if temporary_path is not None:
+                try:
+                    if not cls._is_unsafe_path(temporary_path):
+                        temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     @classmethod
     def _create_update_cache_marker(
@@ -907,25 +956,21 @@ class SelfUpdater:
         except FileNotFoundError:
             cache_root_existed = False
 
-        cache_root = cls._validate_cache_ancestors(cache_dir, normalized_temp)
-        marker_path = cache_root / cls._UPDATE_CACHE_MARKER_FILE
-        try:
-            marker_path.lstat()
-        except FileNotFoundError:
-            if cache_root_existed:
-                raise OSError(f"历史缓存目录缺少有效标记: {cache_root}")
-            with marker_path.open("x", encoding="ascii") as marker_file:
-                marker_file.write(cls._UPDATE_CACHE_MARKER_CONTENT)
-            return marker_path
+        if cache_root_existed:
+            marker_path = cls._validate_existing_cache_marker(cache_root)
         else:
-            if cls._is_unsafe_path(marker_path):
-                raise OSError(f"缓存标记路径为链接或重解析点: {marker_path}")
+            normalized_temp.mkdir(parents=True, exist_ok=True)
+            if cls._is_unsafe_path(normalized_temp):
+                raise OSError(f"临时目录为链接或重解析点: {normalized_temp}")
             try:
-                marker_content = marker_path.read_text(encoding="ascii")
-            except (OSError, UnicodeDecodeError) as error:
-                raise OSError(f"缓存标记无效: {marker_path}") from error
-            if marker_content != cls._UPDATE_CACHE_MARKER_CONTENT:
-                raise OSError(f"缓存标记无效: {marker_path}")
+                cache_root.mkdir()
+            except FileExistsError:
+                marker_path = cls._validate_existing_cache_marker(cache_root)
+            else:
+                if cls._is_unsafe_path(cache_root):
+                    raise OSError(f"缓存根目录不安全: {cache_root}")
+                marker_path = cls._publish_new_cache_marker(cache_root)
+        cache_root = cls._validate_cache_ancestors(cache_dir, normalized_temp)
         return marker_path
 
     @classmethod
@@ -1100,7 +1145,26 @@ class SelfUpdater:
             logger.warning(f"缓存目录缺少有效标记，跳过清理: {cache_dir}")
             return
 
-        SelfUpdater._remove_marked_cache_contents(cache_dir, logger)
+        installs_dir = cache_dir / "installs"
+        if installs_dir.exists():
+            if not installs_dir.is_dir() or SelfUpdater._is_unsafe_path(installs_dir):
+                logger.warning(f"跳过不安全的缓存安装目录: {installs_dir}")
+                return
+            SelfUpdater._remove_marked_cache_contents(installs_dir, logger)
+
+        try:
+            if not SelfUpdater._is_unsafe_path(marker_path):
+                marker_path.unlink()
+        except OSError as error:
+            logger.warning(f"删除缓存标记失败，已跳过: {marker_path}, {error}")
+            return
+
+        try:
+            if not SelfUpdater._is_unsafe_path(cache_dir):
+                cache_dir.rmdir()
+                logger.info("已清理自更新缓存目录")
+        except OSError as error:
+            logger.warning(f"删除缓存目录失败，已保留根级未知内容: {cache_dir}, {error}")
 
     @staticmethod
     def rollback(logger: Optional[logging.Logger] = None) -> bool:
