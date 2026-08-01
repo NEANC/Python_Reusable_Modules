@@ -436,7 +436,7 @@ class SelfUpdater:
                 return False
 
             cache_dir = Path(self.temp_folder) / "UpdateCache" / "installs" / latest_version
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            self._create_update_cache_marker(cache_dir)
             tmp_path = cache_dir / f"{self.app_name}-{latest_version}.exe"
             sha_path = cache_dir / f"{self.app_name}-{latest_version}.sha256"
 
@@ -840,6 +840,52 @@ class SelfUpdater:
             attributes & cls._FILE_ATTRIBUTE_REPARSE_POINT
         )
 
+    @classmethod
+    def _create_update_cache_marker(cls, cache_dir: Path) -> Path:
+        """创建缓存标记文件，返回标记路径。"""
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        marker_path = cache_dir.parent.parent / cls._UPDATE_CACHE_MARKER_FILE
+        if not marker_path.exists():
+            marker_tmp_path = marker_path.with_suffix(".tmp")
+            marker_tmp_path.write_text(
+                cls._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            marker_tmp_path.replace(marker_path)
+        return marker_path
+
+    @classmethod
+    def _remove_marked_cache_contents(
+            cls,
+            cache_dir: Path,
+            logger: logging.Logger,
+    ) -> None:
+        """删除缓存中的普通文件和目录，保留链接与 reparse point。"""
+        if cls._is_unsafe_directory(cache_dir):
+            logger.warning(f"跳过不安全缓存目录: {cache_dir}")
+            return
+
+        for child_path in cache_dir.iterdir():
+            if child_path.is_symlink():
+                logger.warning(f"保留不安全缓存链接: {child_path}")
+                continue
+            if child_path.is_dir():
+                if cls._is_unsafe_directory(child_path):
+                    logger.warning(f"保留不安全缓存目录: {child_path}")
+                    continue
+                cls._remove_marked_cache_contents(child_path, logger)
+                continue
+            try:
+                child_path.unlink()
+            except OSError as error:
+                logger.warning(f"清理缓存文件失败，已跳过: {child_path}, {error}")
+
+        try:
+            cache_dir.rmdir()
+            logger.info("已清理自更新缓存目录")
+        except OSError:
+            pass
+
     @staticmethod
     def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> None:
         """删除指定目录树中的空目录。"""
@@ -931,19 +977,36 @@ class SelfUpdater:
     @staticmethod
     def clean_update_cache(temp_folder: str, logger: logging.Logger) -> None:
         """
-        清理自更新缓存目录 UpdateCache
+        清理带有效标记的自更新缓存目录 UpdateCache
 
         Args:
             temp_folder: 临时文件夹路径
             logger: 日志记录器
         """
-        cache_dir = Path(temp_folder) / "UpdateCache"
-        if cache_dir.exists():
-            try:
-                shutil.rmtree(cache_dir)
-                logger.info("已清理自更新缓存目录")
-            except OSError as e:
-                logger.warning(f"清理自更新缓存目录失败: {e}")
+        temp_path = Path(temp_folder)
+        if not temp_path.exists():
+            return
+        if not temp_path.is_dir() or SelfUpdater._is_unsafe_directory(temp_path):
+            logger.warning(f"跳过不安全的临时目录: {temp_path}")
+            return
+
+        cache_dir = temp_path / "UpdateCache"
+        if not cache_dir.exists():
+            return
+        if not cache_dir.is_dir() or SelfUpdater._is_unsafe_directory(cache_dir):
+            logger.warning(f"跳过不安全的缓存目录: {cache_dir}")
+            return
+
+        marker_path = cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+        try:
+            marker_content = marker_path.read_text(encoding="ascii")
+        except OSError:
+            marker_content = ""
+        if marker_content != SelfUpdater._UPDATE_CACHE_MARKER_CONTENT:
+            logger.warning(f"缓存目录缺少有效标记，跳过清理: {cache_dir}")
+            return
+
+        SelfUpdater._remove_marked_cache_contents(cache_dir, logger)
 
     @staticmethod
     def rollback(logger: Optional[logging.Logger] = None) -> bool:

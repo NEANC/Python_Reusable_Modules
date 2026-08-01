@@ -910,6 +910,84 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             with patch.object(Path, "is_symlink", return_value=False):
                 self.assertFalse(SelfUpdater._is_unsafe_directory(path))
 
+    def test_clean_update_cache_removes_only_marked_cache(self):
+        """仅带有效标记的 UpdateCache 应被清理。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / "UpdateCache"
+            version_dir = root / "v1.2.0"
+            cache_dir.mkdir()
+            version_dir.mkdir()
+            (cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE).write_text(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            (cache_dir / "installs" / "v1.2.0").mkdir(parents=True)
+            (cache_dir / "installs" / "v1.2.0" / "App.exe").write_bytes(b"cache")
+
+            SelfUpdater.clean_update_cache(str(root), logging.getLogger("SelfUpdaterTest"))
+
+            self.assertFalse(cache_dir.exists())
+            self.assertTrue(version_dir.exists())
+            self.assertTrue(root.exists())
+
+    def test_clean_update_cache_skips_unmarked_cache(self):
+        """无有效标记的 UpdateCache 不应被清理。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "UpdateCache"
+            cache_dir.mkdir()
+            cached_file = cache_dir / "App.exe"
+            cached_file.write_bytes(b"cache")
+
+            with self.assertLogs("SelfUpdaterTest", level="WARNING"):
+                SelfUpdater.clean_update_cache(temp_dir, logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(cached_file.exists())
+
+    def test_clean_update_cache_preserves_link_and_target(self):
+        """缓存中的链接及其目标不应被删除。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / "UpdateCache"
+            external_dir = root / "external"
+            cache_dir.mkdir()
+            external_dir.mkdir()
+            (external_dir / "keep.txt").write_text("keep", encoding="utf-8")
+            (cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE).write_text(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            (cache_dir / "delete.txt").write_text("delete", encoding="utf-8")
+            link = cache_dir / "external-link"
+            try:
+                link.symlink_to(external_dir, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"当前环境无法创建符号链接: {error}")
+
+            SelfUpdater.clean_update_cache(str(root), logging.getLogger("SelfUpdaterTest"))
+
+            self.assertTrue(link.exists())
+            self.assertTrue((external_dir / "keep.txt").exists())
+            self.assertFalse((cache_dir / "delete.txt").exists())
+            self.assertTrue(cache_dir.exists())
+
+    def test_create_update_cache_writes_marker_before_download(self):
+        """新建下载缓存时应写入有效标记文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater = self.make_updater(temp_folder=temp_dir)
+            cache_dir = Path(temp_dir) / "UpdateCache" / "installs" / "v1.2.0"
+
+            marker_path = updater._create_update_cache_marker(cache_dir)
+
+            self.assertEqual(
+                cache_dir.parent.parent / SelfUpdater._UPDATE_CACHE_MARKER_FILE,
+                marker_path,
+            )
+            self.assertEqual(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                marker_path.read_text(encoding="ascii"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
