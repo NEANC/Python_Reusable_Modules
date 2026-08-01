@@ -202,6 +202,18 @@ if args.update or args.update_force:
     sys.exit(0)
 
 # ── 正常启动：清理上次更新残留 ──
+is_bundled, package_type = detect_package_type()
+updater = SelfUpdater(
+    github_repo="you/your-repo",
+    asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
+    app_name="YourApp",
+    current_version=APP_VERSION,
+    proxy="",
+    temp_folder=temp_folder,
+    logger=logger,
+    is_bundled=is_bundled,
+    package_type=package_type,
+)
 updater._cleanup_update_residue(logger)
 ```
 
