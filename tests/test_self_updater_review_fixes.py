@@ -3,6 +3,7 @@
 
 """self_updater 模块的回归测试。"""
 
+import configparser
 import hashlib
 import inspect
 import logging
@@ -335,11 +336,30 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             {"--bad name": "flag"},
             {"--bad\nname": "flag"},
             {"--config": "unknown"},
+            {"": "value"},
+            {"--": "flag"},
+            ("--config", "value"),
+            ["--config", "value"],
         )
         for whitelist in invalid_whitelists:
             with self.subTest(whitelist=whitelist):
                 with self.assertRaises(ValueError):
                     self.make_updater(passthrough_args_whitelist=whitelist)
+
+    def test_self_updater_rejects_invalid_post_update_action(self):
+        """构造应拒绝未知的 post_update_action 值。"""
+        for action in ("restart", "START", "", None):
+            with self.subTest(post_update_action=action):
+                with self.assertRaises(ValueError):
+                    self.make_updater(post_update_action=action)
+
+    def test_self_updater_accepts_valid_post_update_action(self):
+        """构造应接受合法的 post_update_action 值 start 与 exit。"""
+        start_updater = self.make_updater(post_update_action="start")
+        self.assertEqual("start", start_updater.post_update_action)
+
+        exit_updater = self.make_updater(post_update_action="exit")
+        self.assertEqual("exit", exit_updater.post_update_action)
 
     def test_update_state_uses_explicit_base_dir(self):
         """UpdateState 应支持显式目录，避免依赖 sys.argv[0]。"""
@@ -387,6 +407,45 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 loaded.get("LaunchArgs", "passthrough_args_json"),
             )
             self.assertEqual("", loaded.get("Protocol", "schema_version", fallback=""))
+
+    def test_update_state_defaults_include_launch_args_and_protocol(self):
+        """UpdateState 默认应含 LaunchArgs 键，Protocol 节无 schema_version 键。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = UpdateState(base_dir=temp_dir)
+
+            self.assertEqual("start", state.get("LaunchArgs", "post_update_action"))
+            self.assertEqual("[]", state.get("LaunchArgs", "passthrough_args_json"))
+            self.assertEqual("", state.get("Protocol", "schema_version", fallback=""))
+
+            state.save()
+            loaded = UpdateState.load(base_dir=temp_dir)
+            self.assertIsNotNone(loaded)
+            self.assertEqual("start", loaded.get("LaunchArgs", "post_update_action"))
+            self.assertEqual("[]", loaded.get("LaunchArgs", "passthrough_args_json"))
+            self.assertEqual("", loaded.get("Protocol", "schema_version", fallback=""))
+
+    def test_update_state_schema_version_not_reintroduced_on_save(self):
+        """旧协议状态文件保存后不应被补写 schema_version 默认值。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = UpdateState(base_dir=temp_dir)
+            state["state"] = "verified"
+            state.save()
+            state_file = Path(temp_dir) / "update_state.ini"
+
+            # 用 configparser 重写状态文件，去掉 [Protocol] 节，模拟旧协议文件
+            parser = configparser.ConfigParser()
+            parser.read(state_file, encoding="utf-8")
+            parser.remove_section("Protocol")
+            with state_file.open("w", encoding="utf-8") as f:
+                parser.write(f)
+
+            loaded = UpdateState.load(base_dir=temp_dir)
+            self.assertIsNotNone(loaded)
+            loaded.save()
+            reloaded = UpdateState.load(base_dir=temp_dir)
+
+            self.assertIsNotNone(reloaded)
+            self.assertEqual("", reloaded.get("Protocol", "schema_version", fallback=""))
 
     def test_preview_channel_selects_highest_valid_release(self):
         """preview 通道应按语义版本选择最高有效 release。"""
