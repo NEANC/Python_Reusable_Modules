@@ -40,6 +40,13 @@ class UpdateState:
         },
         "Version": {"old_version": "", "new_version": "", "old_sha256": "", "new_sha256": ""},
         "Retry": {"retry_count": "0", "max_retry": "3"},
+        "LaunchArgs": {
+            "post_update_action": "start",
+            "passthrough_args_json": "[]",
+        },
+        # 协议节不提供默认键，schema_version 仅由新版本主动写入，
+        # 避免旧状态文件加载/保存后被补写默认版本而无法区分旧协议
+        "Protocol": {},
     }
 
     def __init__(self, base_dir: Optional[str | Path] = None,
@@ -50,7 +57,8 @@ class UpdateState:
             base_dir: 状态文件所在目录，未传时使用当前入口文件所在目录。
             file_path: 状态文件完整路径，优先级高于 base_dir。
         """
-        self._config = configparser.ConfigParser(strict=False)
+        # interpolation=None 关闭 % 占位符插值，透传参数 JSON 中可含 %APPDATA% 等
+        self._config = configparser.ConfigParser(interpolation=None, strict=False)
         self._ensure_defaults()
         self._file_path = self._resolve_file_path(base_dir, file_path)
 

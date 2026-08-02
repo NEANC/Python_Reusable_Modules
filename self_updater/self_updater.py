@@ -27,7 +27,7 @@ import time
 import requests
 
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Mapping, Optional, Tuple
 
 from download import DownloadManager
 
@@ -70,6 +70,18 @@ class SelfUpdater:
     _UPDATE_CACHE_MARKER_FILE = ".self_updater_cache"
     _UPDATE_CACHE_MARKER_CONTENT = "self_updater_update_cache_v1\n"
     _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+    # 自更新流程内部占用的命令行参数，不允许被透传白名单授权给主程序
+    _INTERNAL_ARG_SPECS = {
+        "--update": "flag",
+        "--update-force": "flag",
+        "--self-update-verify": "flag",
+        "--self-update-cleanup": "flag",
+        "--self-update-cleanup-parent-pid": "value",
+        "--expected-sha256": "value",
+        "--expected-version": "value",
+        "--retry-update": "flag",
+        "--update-failed": "flag",
+    }
 
     def __init__(self, github_repo: str, asset_pattern: str, app_name: str,
                  current_version: str, proxy: str,
@@ -78,7 +90,11 @@ class SelfUpdater:
                  download_func: Optional[Callable[[str, str], bool]] = None,
                  self_update_channel: str = 'preview',
                  is_bundled: Optional[bool] = None,
-                 package_type: Optional[str] = None):
+                 package_type: Optional[str] = None,
+                 post_update_action: Literal["start", "exit"] = "start",
+                 passthrough_args_whitelist: Optional[
+                     Mapping[str, Literal["flag", "value"]]
+                 ] = None):
         """
         初始化自更新器
 
@@ -94,8 +110,13 @@ class SelfUpdater:
             self_update_channel: 更新通道 ('preview', 'stable')
             is_bundled: 外部预检测的是否为打包程序（可选）
             package_type: 外部预检测的打包方式（可选）
+            post_update_action: 更新完成后的启动动作（'start' 启动新版本，'exit' 直接退出）
+            passthrough_args_whitelist: 允许透传给主程序的命令行参数白名单，
+                形如 {"--config": "value", "--portable": "flag"}，不传则为空
         """
         self._validate_app_name(app_name)
+        self._validate_post_update_action(post_update_action)
+        self._validate_passthrough_args_whitelist(passthrough_args_whitelist)
         self.github_repo = github_repo
         self.asset_regex = re.compile(asset_pattern)
         self.app_name = app_name
@@ -107,6 +128,8 @@ class SelfUpdater:
         self.self_update_channel = self_update_channel
         self._is_bundled = is_bundled
         self._package_type = package_type
+        self.post_update_action = post_update_action
+        self.passthrough_args_whitelist = dict(passthrough_args_whitelist or {})
 
     @classmethod
     def _validate_app_name(cls, app_name: str) -> None:
@@ -125,6 +148,42 @@ class SelfUpdater:
                 "app_name 只能包含英文字母、数字、下划线、点和连字符，"
                 "且不能为纯点号、首尾点号或 Windows 保留设备名"
             )
+
+    @classmethod
+    def _validate_post_update_action(cls, post_update_action: str) -> None:
+        """校验更新后启动动作只能是 start 或 exit。"""
+        if post_update_action not in ("start", "exit"):
+            raise ValueError(
+                f"post_update_action 只能是 'start' 或 'exit'，"
+                f"当前为 {post_update_action!r}"
+            )
+
+    @classmethod
+    def _validate_passthrough_args_whitelist(cls, whitelist) -> None:
+        """校验透传参数白名单：Mapping、参数名与规格值格式。"""
+        if whitelist is None:
+            return
+        if not isinstance(whitelist, Mapping):
+            raise ValueError("passthrough_args_whitelist 必须是 Mapping 类型")
+        for arg_name, spec in whitelist.items():
+            if not cls._is_valid_arg_name(arg_name):
+                raise ValueError(f"非法透传参数名: {arg_name!r}")
+            if spec not in ("flag", "value"):
+                raise ValueError(
+                    f"非法透传参数规格: {arg_name!r}={spec!r}，"
+                    f"只能是 'flag' 或 'value'"
+                )
+
+    @staticmethod
+    def _is_valid_arg_name(arg_name: str) -> bool:
+        """校验透传参数名以 -- 开头且不含 =、空白或控制字符。"""
+        return (
+            isinstance(arg_name, str)
+            and arg_name.startswith("--")
+            and len(arg_name) > 2
+            and "=" not in arg_name
+            and not any(c.isspace() or ord(c) < 32 or c == "\x7f" for c in arg_name)
+        )
 
     def _resolve_temp_folder(self, temp_folder: Optional[str]) -> str:
         """解析自更新临时目录，优先使用 LOCALAPPDATA，失败时回退程序目录。"""

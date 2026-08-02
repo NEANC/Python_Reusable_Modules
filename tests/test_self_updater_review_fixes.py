@@ -78,7 +78,7 @@ class FakeExitedProcess:
 class SelfUpdaterReviewFixesTest(unittest.TestCase):
     """覆盖代码审查反馈中的关键修复项。"""
 
-    def make_updater(self, current_version="v1.0.0", app_name="App", temp_folder=None):
+    def make_updater(self, current_version="v1.0.0", app_name="App", temp_folder=None, **kwargs):
         """创建测试用 SelfUpdater 实例。"""
         return SelfUpdater(
             github_repo="owner/repo",
@@ -90,6 +90,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             temp_folder=temp_folder,
             is_bundled=True,
             package_type="Nuitka",
+            **kwargs,
         )
 
     def _make_runtime_paths(self, root: Path, temp_folder_name="self-update"):
@@ -314,6 +315,32 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
         self.assertEqual("App_Name-1.0", updater.app_name)
 
+    def test_self_updater_validates_and_copies_launch_configuration(self):
+        """构造应校验启动协议参数并复制白名单，不保留调用方引用。"""
+        whitelist = {"--config": "value", "--portable": "flag"}
+        updater = self.make_updater(
+            post_update_action="exit",
+            passthrough_args_whitelist=whitelist,
+        )
+        whitelist["--later"] = "flag"
+
+        self.assertEqual("exit", updater.post_update_action)
+        self.assertNotIn("--later", updater.passthrough_args_whitelist)
+
+    def test_self_updater_rejects_invalid_launch_configuration(self):
+        """构造应拒绝非法的启动参数白名单。"""
+        invalid_whitelists = (
+            {"config": "value"},
+            {"--bad=name": "value"},
+            {"--bad name": "flag"},
+            {"--bad\nname": "flag"},
+            {"--config": "unknown"},
+        )
+        for whitelist in invalid_whitelists:
+            with self.subTest(whitelist=whitelist):
+                with self.assertRaises(ValueError):
+                    self.make_updater(passthrough_args_whitelist=whitelist)
+
     def test_update_state_uses_explicit_base_dir(self):
         """UpdateState 应支持显式目录，避免依赖 sys.argv[0]。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -345,6 +372,21 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertEqual("", state["helper_ps1"])
             self.assertEqual("", state["update_ps1"])
             self.assertEqual("", state["lock_file"])
+
+    def test_update_state_preserves_launch_args_without_interpolation(self):
+        """UpdateState 不应插值 LaunchArgs 的 % 占位符，且不补写 schema_version。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = UpdateState(base_dir=temp_dir)
+            state.set("LaunchArgs", "passthrough_args_json", '["%APPDATA%","值"]')
+            state.save()
+
+            loaded = UpdateState.load(base_dir=temp_dir)
+
+            self.assertEqual(
+                '["%APPDATA%","值"]',
+                loaded.get("LaunchArgs", "passthrough_args_json"),
+            )
+            self.assertEqual("", loaded.get("Protocol", "schema_version", fallback=""))
 
     def test_preview_channel_selects_highest_valid_release(self):
         """preview 通道应按语义版本选择最高有效 release。"""
