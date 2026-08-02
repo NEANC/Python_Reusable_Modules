@@ -6,10 +6,14 @@
 import configparser
 import hashlib
 import inspect
+import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from pathlib import Path
@@ -226,13 +230,25 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         cleanup = ps1_fragments.generate_helper_file_cleanup_functions_ps1()
         lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
 
-        self.assertIn("function Quote-Arg", args)
+        self.assertIn("function ConvertTo-WindowsCommandLineArg", args)
         self.assertIn("function Get-RetryOrDefault", retry)
         self.assertIn("function Remove-WithRetry", cleanup)
         self.assertIn("function Commit-Update", lifecycle)
         self.assertIn("function Restore-Backup", lifecycle)
         self.assertIn("function Start-ProcWait", lifecycle)
         self.assertIn("function Start-NormalAppVisible", lifecycle)
+
+    def test_helper_lifecycle_uses_process_start_info_and_verified_commit(self):
+        """生命周期片段应使用 ProcessStartInfo 启动并在提交前保持待验证状态。"""
+        state = ps1_fragments.generate_common_state_functions_ps1()
+        lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+
+        self.assertIn('throw "Write-IniValue failed:', state)
+        self.assertIn('Read-IniValue "State" "state"', lifecycle)
+        self.assertIn('Read-IniValue "Retry" "retry_count"', lifecycle)
+        self.assertIn("System.Diagnostics.ProcessStartInfo", lifecycle)
+        self.assertNotIn("Start-Process @startArgs", lifecycle)
+        self.assertGreaterEqual(lifecycle.count("ConvertTo-WindowsCommandLineArg"), 2)
 
     def test_fetch_current_release_sha256_requires_exact_package_type(self):
         """当前版本完整性校验不应降级匹配其他打包方式。"""
@@ -1178,7 +1194,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             "function Move-WithRetry",
         )
         helper_only_functions = (
-            "function Quote-Arg",
+            "function ConvertTo-WindowsCommandLineArg",
             "function Restore-Backup",
             "function Start-ProcWait",
             "function Start-NormalAppVisible",
@@ -2490,6 +2506,228 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     )
 
             self.assertIn("删除空目录失败", "\n".join(captured.output))
+
+
+class PowerShell51IntegrationTest(unittest.TestCase):
+    """Windows PowerShell 5.1 集成测试（仅在本机可用时运行）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        """检测 Windows PowerShell 5.1 是否可用，不可用时跳过本类测试。"""
+        if os.name != "nt" or not shutil.which("powershell.exe"):
+            raise unittest.SkipTest("Windows PowerShell 5.1 不可用，跳过集成测试")
+
+    def setUp(self):
+        """初始化残留进程记录。"""
+        self._started_pids = []
+
+    def tearDown(self):
+        """清理残留的捕获进程，避免测试相互干扰。"""
+        for pid in self._started_pids:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F", "/T"],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except Exception:
+                pass
+        self._started_pids = []
+
+    def _write_argv_capture_script(self, root: Path) -> Path:
+        """创建捕获 sys.argv[1:] 并写入 JSON 的 Python 捕获脚本。"""
+        script = root / "capture_argv.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "# -_- coding: utf-8 -_-\n"
+            "\n"
+            "import json\n"
+            "import sys\n"
+            "\n"
+            "with open(sys.argv[1], 'w', encoding='utf-8') as handle:\n"
+            "    json.dump(sys.argv[2:], handle, ensure_ascii=False)\n",
+            encoding="utf-8",
+        )
+        return script
+
+    @staticmethod
+    def _ps_single_quote(value) -> str:
+        """将字符串转义为 PowerShell 单引号字符串字面量。"""
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def _run_ps(self, script: str):
+        """在 Windows PowerShell 5.1 中执行脚本，返回 (returncode, stdout, stderr)。"""
+        completed = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        return completed.returncode, completed.stdout, completed.stderr
+
+    def _argv_capture_script(self, capture_script: Path, out_file: Path,
+                             argv) -> str:
+        """构造调用 Start-ProcWait 捕获 argv 的 PowerShell 脚本。"""
+        base = ps1_fragments.generate_common_base_functions_ps1()
+        state = ps1_fragments.generate_common_state_functions_ps1()
+        args = ps1_fragments.generate_helper_argument_functions_ps1()
+        lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+        items = [self._ps_single_quote(capture_script), self._ps_single_quote(out_file)]
+        items += [self._ps_single_quote(item) for item in argv]
+        array = ", ".join(items)
+        return (
+            "$ErrorActionPreference = 'Stop'\n"
+            + base
+            + state
+            + args
+            + lifecycle
+            + "$code = Start-ProcWait "
+            + self._ps_single_quote(sys.executable)
+            + " @(" + array + ") 60 $true\n"
+            + "exit $code\n"
+        )
+
+    def test_start_proc_wait_round_trips_windows_argv(self):
+        """Start-ProcWait 应按 Windows 命令行规则往返传递参数。"""
+        cases = {
+            "zero": [],
+            "single": ["hello"],
+            "multiple": ["a", "b", "c"],
+            "empty_string": [""],
+            "spaces": ["with space", " two "],
+            "single_quote": ["it's a test"],
+            "double_quote": ['say "hi"'],
+            "unicode": ["中文参数"],
+            "trailing_backslash": ["trailing\\"],
+            "backtick": ["back`tick"],
+            "dollar_paren": ["$()"],
+            "semicolon": ["a;b"],
+            "pipe": ["a|b"],
+            "percent_env": ["%VAR%"],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            capture_script = self._write_argv_capture_script(root)
+            out_file = root / "argv.json"
+            for name, argv in cases.items():
+                with self.subTest(case=name):
+                    if out_file.exists():
+                        out_file.unlink()
+                    script = self._argv_capture_script(capture_script, out_file, argv)
+                    code, stdout, stderr = self._run_ps(script)
+                    self.assertEqual(
+                        0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+                    )
+                    loaded = json.loads(out_file.read_text(encoding="utf-8"))
+                    self.assertEqual(argv, loaded)
+
+    def test_start_normal_app_visible_round_trips_windows_argv(self):
+        """Start-NormalAppVisible 应按 Windows 命令行规则往返传递参数。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            capture_script = self._write_argv_capture_script(root)
+            out_file = root / "argv.json"
+            pid_file = root / "pid.txt"
+
+            argv = ["--config", r"C:\path with space\app.ini", 'quote"x', "中文"]
+            base = ps1_fragments.generate_common_base_functions_ps1()
+            state = ps1_fragments.generate_common_state_functions_ps1()
+            args = ps1_fragments.generate_helper_argument_functions_ps1()
+            lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+            items = [self._ps_single_quote(capture_script), self._ps_single_quote(out_file)]
+            items += [self._ps_single_quote(item) for item in argv]
+            array = ", ".join(items)
+            script = (
+                "$ErrorActionPreference = 'Stop'\n"
+                + base
+                + state
+                + args
+                + lifecycle
+                + "$p = Start-NormalAppVisible "
+                + self._ps_single_quote(sys.executable)
+                + " @(" + array + ")\n"
+                + "$p.Id | Out-File -FilePath "
+                + self._ps_single_quote(str(pid_file))
+                + " -Encoding ascii\n"
+            )
+            code, stdout, stderr = self._run_ps(script)
+            self.assertEqual(
+                0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+            )
+
+            if pid_file.exists():
+                self._started_pids.append(
+                    int(pid_file.read_text(encoding="ascii").strip()),
+                )
+
+            loaded = None
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                if out_file.exists():
+                    try:
+                        loaded = json.loads(out_file.read_text(encoding="utf-8"))
+                        break
+                    except (ValueError, OSError):
+                        pass
+                time.sleep(0.1)
+            self.assertIsNotNone(loaded, "捕获脚本未在 10 秒内完成")
+            self.assertEqual(argv, loaded)
+
+    def test_write_ini_value_preserves_launch_args_json(self):
+        """Write-IniValue 与 Read-IniValue 应保持启动参数 JSON 特殊字符往返一致。"""
+        payloads = {
+            "percent": "%VAR%",
+            "semicolon": "a;b",
+            "hash": "#tag",
+            "equals": "k=v",
+            "unicode": "中文参数",
+            "empty": "",
+            "trailing_backslash": "C:\\path\\",
+            "combined_json": json.dumps(
+                ["a b", 'x"y', "%VAR%", "", "中文"], ensure_ascii=False,
+            ),
+        }
+        base = ps1_fragments.generate_common_base_functions_ps1()
+        state = ps1_fragments.generate_common_state_functions_ps1()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name, payload in payloads.items():
+                with self.subTest(case=name):
+                    state_file = root / ("state_" + name + ".ini")
+                    state_file.write_text(
+                        "[State]\nstate = pending_new_verify\n",
+                        encoding="utf-8",
+                    )
+                    log_file = root / "update.log"
+                    out_file = root / ("readback_" + name + ".txt")
+                    script = (
+                        "$ErrorActionPreference = 'Stop'\n"
+                        + base
+                        + state
+                        + "$stateFile = " + self._ps_single_quote(str(state_file)) + "\n"
+                        + "$logFile = " + self._ps_single_quote(str(log_file)) + "\n"
+                        + 'Write-IniValue "LaunchArgs" "passthrough_args_json" '
+                        + self._ps_single_quote(payload) + "\n"
+                        + '$readBack = Read-IniValue "LaunchArgs" "passthrough_args_json"\n'
+                        + "[System.IO.File]::WriteAllText("
+                        + self._ps_single_quote(str(out_file))
+                        + ", $readBack, [System.Text.Encoding]::UTF8)\n"
+                    )
+                    code, stdout, stderr = self._run_ps(script)
+                    self.assertEqual(
+                        0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+                    )
+                    read_back = out_file.read_text(encoding="utf-8-sig")
+                    self.assertEqual(payload, read_back)
 
 
 if __name__ == "__main__":

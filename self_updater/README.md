@@ -308,7 +308,7 @@ updater._cleanup_update_residue(logger)
 | `generate_common_state_functions_ps1()` | 生成 `Read-IniValue`、`Write-IniValue`、`Set-UpdateStatus`。 |
 | `generate_move_with_retry_ps1()` | 生成 `Move-WithRetry`。 |
 | `generate_sha256_function_ps1()` | 生成 `Get-SHA256`，支持 SHA256 多路径回退。 |
-| `generate_helper_argument_functions_ps1()` | 生成 Helper 专用的 `Quote-Arg`。 |
+| `generate_helper_argument_functions_ps1()` | 生成 Helper 专用的 `ConvertTo-WindowsCommandLineArg`。 |
 | `generate_helper_retry_functions_ps1()` | 生成 Helper 专用的 `Get-RetryOrDefault`。 |
 | `generate_helper_file_cleanup_functions_ps1()` | 生成 Helper 专用的 `Remove-WithRetry`。 |
 | `generate_helper_lifecycle_functions_ps1()` | 生成 `Commit-Update`、`Restore-Backup`、`Start-ProcWait`、`Start-NormalAppVisible`。 |

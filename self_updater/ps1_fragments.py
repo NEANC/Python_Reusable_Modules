@@ -91,6 +91,7 @@ def generate_common_state_functions_ps1() -> str:
                 Move-Item -LiteralPath $tmp -Destination $stateFile -Force
             } catch {
                 Write-Log "ERROR" "Write-IniValue failed: $($_.Exception.Message)"
+                throw "Write-IniValue failed: $($_.Exception.Message)"
             }
         }
 
@@ -132,17 +133,32 @@ def generate_move_with_retry_ps1() -> str:
 
 
 def generate_helper_argument_functions_ps1() -> str:
-    """生成 Helper 专用的 PowerShell 参数转义函数片段。"""
+    """生成 Helper 专用的 PowerShell 命令行参数编码函数片段。"""
     return textwrap.dedent(r"""
-        function Quote-Arg($arg) {
+        function ConvertTo-WindowsCommandLineArg($arg) {
             if ($null -eq $arg) { return '""' }
             $s = [string]$arg
-            $s = $s -replace '\\(?=")', '\\'
-            $s = $s -replace '"', '\"'
-            if ($s -match '\s' -or $s -eq '') {
-                return '"' + $s + '"'
+            if ($s -eq '') { return '""' }
+            if ($s -notmatch '[ \t\n"]') { return $s }
+            $sb = New-Object System.Text.StringBuilder
+            [void]$sb.Append('"')
+            $backslashes = 0
+            foreach ($ch in $s.ToCharArray()) {
+                if ($ch -eq '\') {
+                    $backslashes++
+                } elseif ($ch -eq '"') {
+                    for ($i = 0; $i -lt ($backslashes * 2 + 1); $i++) { [void]$sb.Append('\') }
+                    $backslashes = 0
+                    [void]$sb.Append('"')
+                } else {
+                    for ($i = 0; $i -lt $backslashes; $i++) { [void]$sb.Append('\') }
+                    $backslashes = 0
+                    [void]$sb.Append($ch)
+                }
             }
-            return $s
+            for ($i = 0; $i -lt ($backslashes * 2); $i++) { [void]$sb.Append('\') }
+            [void]$sb.Append('"')
+            return $sb.ToString()
         }
     """)
 
@@ -184,20 +200,35 @@ def generate_helper_lifecycle_functions_ps1() -> str:
     """生成 Helper 专用的 PowerShell 更新生命周期函数片段。"""
     return textwrap.dedent(r"""
         function Commit-Update {
-            try {
-                $backup = Read-IniValue "Files" "backup_file"
-                Write-IniValue "Retry" "retry_count" "0"
-                Write-IniValue "State" "last_error" ""
-                Write-IniValue "State" "state" "verified"
-                if ($backup -and (Test-Path -LiteralPath $backup)) {
-                    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+            $backup = Read-IniValue "Files" "backup_file"
+            Write-IniValue "Retry" "retry_count" "0"
+            Write-IniValue "State" "last_error" ""
+            Write-IniValue "State" "state" "verified"
+
+            $readState = Read-IniValue "State" "state"
+            if ($readState -ne "verified") {
+                throw "commit verification failed: state read back as '$readState'"
+            }
+            $readRetry = Read-IniValue "Retry" "retry_count"
+            if ($readRetry -ne "0") {
+                throw "commit verification failed: retry_count read back as '$readRetry'"
+            }
+
+            Write-Log "INFO" "update committed"
+
+            if ($backup -and (Test-Path -LiteralPath $backup)) {
+                try {
+                    Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+                } catch {
+                    Write-Log "WARN" "failed to remove backup file: $($_.Exception.Message)"
                 }
-                if (Test-Path -LiteralPath $lockFile) {
-                    Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $lockFile) {
+                try {
+                    Remove-Item -LiteralPath $lockFile -Force -ErrorAction Stop
+                } catch {
+                    Write-Log "WARN" "failed to remove lock file: $($_.Exception.Message)"
                 }
-                Write-Log "INFO" "update committed"
-            } catch {
-                Write-Log "WARN" "Commit-Update failed: $($_.Exception.Message)"
             }
         }
 
@@ -248,7 +279,7 @@ def generate_helper_lifecycle_functions_ps1() -> str:
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
             $psi.WorkingDirectory = Split-Path -Parent $filePath
-            $argsArr = @($argList | ForEach-Object { Quote-Arg $_ })
+            $argsArr = @($argList | ForEach-Object { ConvertTo-WindowsCommandLineArg $_ })
             $psi.Arguments = if ($argsArr.Count -gt 0) { $argsArr -join ' ' } else { '' }
 
             if ($resetPyInstallerEnv) {
@@ -293,18 +324,15 @@ def generate_helper_lifecycle_functions_ps1() -> str:
                     [Environment]::SetEnvironmentVariable($k, $null, "Process")
                 }
 
-                $argsArr = @($argList | ForEach-Object { Quote-Arg $_ })
-                $argString = if ($argsArr.Count -gt 0) { $argsArr -join ' ' } else { '' }
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $filePath
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $false
+                $psi.WorkingDirectory = $workDir
+                $encoded = @($argList | ForEach-Object { ConvertTo-WindowsCommandLineArg $_ })
+                $psi.Arguments = if ($encoded.Count -gt 0) { $encoded -join ' ' } else { '' }
 
-                $startArgs = @{
-                    FilePath = $filePath
-                    WorkingDirectory = $workDir
-                    WindowStyle = 'Normal'
-                }
-                if ($argString) {
-                    $startArgs.ArgumentList = $argString
-                }
-                Start-Process @startArgs
+                return [System.Diagnostics.Process]::Start($psi)
             }
             finally {
                 [Environment]::SetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT", $oldReset, "Process")

@@ -870,8 +870,17 @@ class SelfUpdater:
                     Restore-Backup "verify failed: exit $verifyCode"
                 }
 
-                Set-UpdateStatus "verified" "start_normal_app" "新版验证通过，启动主程序" 100 "INFO"
-                Commit-Update
+                Set-UpdateStatus "pending_new_verify" "commit_update" "新版验证通过，开始提交更新" 100 "INFO"
+                try {
+                    Commit-Update
+                } catch {
+                    try {
+                        Set-UpdateStatus "pending_new_verify" "commit_failed" "提交更新失败: $($_.Exception.Message)" 100 "ERROR"
+                    } catch {
+                        Write-Log "ERROR" "failed to record commit failure: $($_.Exception.Message)"
+                    }
+                    exit 4
+                }
                 Start-NormalAppVisible $target
                 exit 0
             } catch {
