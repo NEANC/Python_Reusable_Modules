@@ -15,6 +15,7 @@
 可移植到其他项目，通过构造函数注入参数即可。
 """
 
+import configparser
 import json
 import logging
 import os
@@ -457,10 +458,11 @@ class SelfUpdater:
                 continue
             if spec == "value":
                 if separator:
-                    if internal_spec is None and not any(
-                            char in inline_value for char in "\r\n\0"
-                    ):
-                        collected.append(token)
+                    if internal_spec is None:
+                        if any(char in inline_value for char in "\r\n\0"):
+                            self.logger.warning(f"参数值含控制字符，已跳过: {token}")
+                        else:
+                            collected.append(token)
                     index += 1
                     continue
                 if self._is_missing_separated_value(argv, index):
@@ -468,10 +470,11 @@ class SelfUpdater:
                     index += 1
                     continue
                 value = argv[index + 1]
-                if internal_spec is None and not any(
-                        char in value for char in "\r\n\0"
-                ):
-                    collected.extend((token, value))
+                if internal_spec is None:
+                    if any(char in value for char in "\r\n\0"):
+                        self.logger.warning(f"参数值含控制字符，已跳过: {token} {value}")
+                    else:
+                        collected.extend((token, value))
                 index += 2
                 continue
             index += 1
@@ -511,7 +514,11 @@ class SelfUpdater:
             (透传参数列表, 更新后动作) 元组
         """
         if retry:
-            existing = UpdateState.load(file_path=paths["state_file"])
+            try:
+                existing = UpdateState.load(file_path=paths["state_file"])
+            except (configparser.Error, OSError, UnicodeDecodeError) as e:
+                self.logger.warning(f"读取状态文件失败，重新采集启动参数: {e}")
+                existing = None
             if existing:
                 retryable_state = existing.get("State", "state", fallback="") in (
                     "verified", "rollback_done", "failed_disabled",

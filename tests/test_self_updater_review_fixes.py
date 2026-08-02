@@ -860,12 +860,20 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         )
 
     def test_collect_passthrough_args_rejects_control_characters(self):
-        """透传参数值含控制字符时不应采集。"""
+        """透传参数值含控制字符时不应采集，且应记录 warning。"""
         updater = self.make_updater(
             passthrough_args_whitelist={"--config": "value"},
         )
 
-        self.assertEqual([], updater._collect_passthrough_args(["--config", "a\nb"]))
+        with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+            result = updater._collect_passthrough_args(
+                ["--config", "a\nb", "--config=a\rb", "--config=a\0b"],
+            )
+
+        self.assertEqual([], result)
+        self.assertEqual(3, len(captured.output))
+        for message in captured.output:
+            self.assertIn("参数值含控制字符", message)
 
     def test_collect_passthrough_args_consumes_internal_value_separated_form(self):
         """内部 value 参数的分离形式应消费下一 token 但不记录。"""
@@ -1066,6 +1074,36 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 '["--config","original.ini"]',
                 loaded.get("LaunchArgs", "passthrough_args_json"),
             )
+
+    def test_resolve_launch_snapshot_recovers_from_corrupt_state(self):
+        """retry=True 且状态文件非法 UTF-8 时应视为损坏并重新采集，而非抛异常。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            program_dir = root / "program"
+            program_dir.mkdir()
+            current_exe = program_dir / "App.exe"
+            current_exe.write_bytes(b"old")
+            temp_folder = root / "self-update"
+            updater = self.make_updater(
+                temp_folder=str(temp_folder),
+                post_update_action="exit",
+                passthrough_args_whitelist={"--config": "value"},
+            )
+            paths = updater._build_update_runtime_paths(current_exe, "v1.2.0")
+            paths["state_file"].write_bytes(b"\xff\xfe\x00garbage")
+
+            with patch(
+                "self_updater.self_updater.sys.argv",
+                [str(current_exe), "--retry-update", "--config", "new.ini"],
+            ):
+                with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+                    args, action = updater._resolve_launch_args_snapshot(
+                        paths, "v1.2.0", retry=True,
+                    )
+
+            self.assertEqual(["--config", "new.ini"], args)
+            self.assertEqual("exit", action)
+            self.assertIn("读取状态文件失败", "\n".join(captured.output))
 
     def test_generated_ps1_uses_injected_program_state_and_runtime_paths(self):
         """生成的 PS1 应使用注入的程序状态、日志和运行时路径。"""
