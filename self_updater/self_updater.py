@@ -15,6 +15,7 @@
 可移植到其他项目，通过构造函数注入参数即可。
 """
 
+import json
 import logging
 import os
 import re
@@ -429,12 +430,120 @@ class SelfUpdater:
 
         return True
 
-    def check_self_update(self, force: bool = False) -> bool:
+    @staticmethod
+    def _is_missing_separated_value(argv: List[str], index: int) -> bool:
+        """判断 value 参数的分离值是否缺失。"""
+        if index + 1 >= len(argv):
+            return True
+        next_token = argv[index + 1]
+        return next_token == "--" or bool(re.fullmatch(r"--[^=]+(?:=.*)?", next_token))
+
+    def _collect_passthrough_args(self, argv: List[str]) -> List[str]:
+        """按白名单采集允许传给新版正常入口的参数。"""
+        collected = []
+        index = 0
+        while index < len(argv):
+            token = argv[index]
+            if token == "--":
+                break
+            name, separator, inline_value = token.partition("=")
+            internal_spec = self._INTERNAL_ARG_SPECS.get(name)
+            allowed_spec = self.passthrough_args_whitelist.get(name)
+            spec = internal_spec or allowed_spec
+            if spec == "flag":
+                if not separator and internal_spec is None:
+                    collected.append(token)
+                index += 1
+                continue
+            if spec == "value":
+                if separator:
+                    if internal_spec is None and not any(
+                            char in inline_value for char in "\r\n\0"
+                    ):
+                        collected.append(token)
+                    index += 1
+                    continue
+                if self._is_missing_separated_value(argv, index):
+                    self.logger.warning(f"参数缺少值，已跳过: {token}")
+                    index += 1
+                    continue
+                value = argv[index + 1]
+                if internal_spec is None and not any(
+                        char in value for char in "\r\n\0"
+                ):
+                    collected.extend((token, value))
+                index += 2
+                continue
+            index += 1
+        return collected
+
+    @staticmethod
+    def _is_string_list_json(value: str) -> bool:
+        """判断 JSON 字符串是否为字符串数组。"""
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return False
+        return isinstance(parsed, list) and all(
+            isinstance(item, str) for item in parsed
+        )
+
+    def _resolve_launch_args_snapshot(
+            self,
+            paths: Dict[str, Path],
+            new_version: str,
+            retry: bool,
+    ) -> Tuple[List[str], str]:
+        """解析本次更新应写入的启动参数快照与更新后动作。
+
+        仅当 retry=True 且已有状态文件满足全部条件时才整体沿用原快照：
+          状态为 verified 或回滚后状态（rollback_done/failed_disabled）、
+          目标版本与本次更新版本一致、协议为 2、更新后动作合法、
+          透传参数 JSON 为字符串数组。
+        否则从 sys.argv[1:] 重新采集，动作使用实例配置。
+
+        Args:
+            paths: 本次更新运行时路径
+            new_version: 本次更新目标版本
+            retry: 是否为回滚后的重试更新
+
+        Returns:
+            (透传参数列表, 更新后动作) 元组
+        """
+        if retry:
+            existing = UpdateState.load(file_path=paths["state_file"])
+            if existing:
+                retryable_state = existing.get("State", "state", fallback="") in (
+                    "verified", "rollback_done", "failed_disabled",
+                )
+                version_matches = (
+                    existing.get("Version", "new_version", fallback="") == new_version
+                )
+                protocol_matches = (
+                    existing.get("Protocol", "schema_version", fallback="") == "2"
+                )
+                action = existing.get("LaunchArgs", "post_update_action", fallback="")
+                action_valid = action in ("start", "exit")
+                args_json = existing.get("LaunchArgs", "passthrough_args_json", fallback="")
+                if (
+                        retryable_state
+                        and version_matches
+                        and protocol_matches
+                        and action_valid
+                        and self._is_string_list_json(args_json)
+                ):
+                    self.logger.info("沿用上次更新准备的启动参数快照")
+                    return json.loads(args_json), action
+                self.logger.warning("状态文件不满足沿用快照条件，重新采集启动参数")
+        return self._collect_passthrough_args(sys.argv[1:]), self.post_update_action
+
+    def check_self_update(self, force: bool = False, retry: bool = False) -> bool:
         """
         检查并准备自身更新
 
         Args:
             force: 是否强制更新
+            retry: 是否为回滚后的重试更新，沿用上次更新准备的启动参数快照
 
         Returns:
             bool: 是否需要退出以完成更新
@@ -525,7 +634,7 @@ class SelfUpdater:
                 return False
 
             self._replace_executable(tmp_path, sha_path, latest_version,
-                                      old_sha256, new_sha256)
+                                      old_sha256, new_sha256, retry=retry)
             return True
         except requests.RequestException as e:
             self.logger.critical(f"获取 GitHub release 信息失败: {e}")
@@ -572,9 +681,17 @@ class SelfUpdater:
 
     def _replace_executable(self, tmp_path: Path, sha_path: Path,
                              new_version: str, old_sha256: str,
-                             new_sha256: str) -> None:
+                             new_sha256: str, retry: bool = False) -> None:
         """
         准备替换：生成 helper.ps1 / update.ps1 → 写 INI → 启动 PowerShell
+
+        Args:
+            tmp_path: 新版本 exe 文件路径
+            sha_path: 新版本 SHA256 文件路径
+            new_version: 新版本号
+            old_sha256: 当前版本 SHA256
+            new_sha256: 新版本 SHA256
+            retry: 是否为回滚后的重试更新，沿用已有启动参数快照
 
         Raises:
             RuntimeError: helper.ps1 启动失败
@@ -585,6 +702,10 @@ class SelfUpdater:
 
         shutil.copy2(tmp_path, paths["new_file"])
         self.logger.info(f"新版本已暂存: {paths['new_file']}")
+
+        passthrough_args, launch_post_update_action = self._resolve_launch_args_snapshot(
+            paths, new_version, retry,
+        )
 
         state = UpdateState(file_path=paths["state_file"])
         state["state"] = "downloaded_verified"
@@ -601,6 +722,13 @@ class SelfUpdater:
         state["new_sha256"] = new_sha256
         state.set("Retry", "retry_count", _get_existing_retry_count(paths["program_dir"]))
         state.set("Retry", "max_retry", "3")
+        state.set("Protocol", "schema_version", "2")
+        state.set("LaunchArgs", "post_update_action", launch_post_update_action)
+        state.set(
+            "LaunchArgs",
+            "passthrough_args_json",
+            json.dumps(passthrough_args, ensure_ascii=False, separators=(",", ":")),
+        )
         state.save()
 
         self._generate_helper_ps1(paths)

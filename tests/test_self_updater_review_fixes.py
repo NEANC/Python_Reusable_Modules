@@ -807,6 +807,266 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertIsNotNone(loaded)
             self.assertIn("helper.ps1", loaded["last_error"])
 
+    def _prepare_launch_snapshot_state(self, program_dir: Path) -> None:
+        """构造含协议与启动参数快照的回滚后状态文件。"""
+        state = UpdateState(base_dir=program_dir)
+        state["state"] = "rollback_done"
+        state["target"] = str(program_dir / "App.exe")
+        state["new_version"] = "v1.2.0"
+        state.set("Protocol", "schema_version", "2")
+        state.set("LaunchArgs", "post_update_action", "exit")
+        state.set("LaunchArgs", "passthrough_args_json", '["--config","original.ini"]')
+        state.save()
+
+    def _run_update_prepare(self, updater, current_exe: Path, argv, retry=False):
+        """在给定 argv 下执行一次完整的更新准备流程。"""
+        with patch("self_updater.self_updater.sys.argv", argv), \
+                patch("self_updater.self_updater.get_exe_path", return_value=current_exe), \
+                patch("self_updater.self_updater.subprocess.Popen",
+                      return_value=FakeExitedProcess()), \
+                patch.object(updater, "_check_system_environment", return_value=True), \
+                patch.object(updater, "_fetch_latest_release",
+                             return_value={"tag_name": "v1.2.0"}), \
+                patch.object(updater, "_match_asset",
+                             return_value=("https://example.invalid/App.exe", "App.exe")), \
+                patch.object(updater, "_get_asset_sha256", return_value="a" * 64), \
+                patch.object(updater, "_fetch_current_release_sha256", return_value=""), \
+                patch("self_updater.self_updater.calculate_sha256", return_value="a" * 64):
+            updater._download_func = (
+                lambda url, save_path: Path(save_path).write_bytes(b"new") or True
+            )
+            updater.check_self_update(retry=retry)
+
+    def test_collect_passthrough_args_applies_whitelist_protocol(self):
+        """按白名单采集参数：分离值、等号值、内部参数、缺值、终止符与重复项。"""
+        updater = self.make_updater(
+            passthrough_args_whitelist={
+                "--config": "value",
+                "--profile": "value",
+                "--portable": "flag",
+            },
+        )
+        argv = [
+            "--config", "app.ini", "--unknown", "ignored",
+            "--portable", "--self-update-verify", "--profile=work",
+            "--config", "--update", "--profile=", "--", "--portable",
+        ]
+
+        result = updater._collect_passthrough_args(argv)
+
+        self.assertEqual(
+            ["--config", "app.ini", "--portable", "--profile=work", "--profile="],
+            result,
+        )
+
+    def test_collect_passthrough_args_rejects_control_characters(self):
+        """透传参数值含控制字符时不应采集。"""
+        updater = self.make_updater(
+            passthrough_args_whitelist={"--config": "value"},
+        )
+
+        self.assertEqual([], updater._collect_passthrough_args(["--config", "a\nb"]))
+
+    def test_collect_passthrough_args_consumes_internal_value_separated_form(self):
+        """内部 value 参数的分离形式应消费下一 token 但不记录。"""
+        updater = self.make_updater(passthrough_args_whitelist={"--config": "value"})
+
+        result = updater._collect_passthrough_args(
+            ["--expected-version", "v1.2.0", "--config", "app.ini"],
+        )
+
+        self.assertEqual(["--config", "app.ini"], result)
+
+    def test_collect_passthrough_args_skips_internal_value_equal_form(self):
+        """内部 value 参数的等号形式应只跳过自身。"""
+        updater = self.make_updater(passthrough_args_whitelist={"--config": "value"})
+
+        result = updater._collect_passthrough_args(
+            ["--expected-version=v1.2.0", "--config", "app.ini"],
+        )
+
+        self.assertEqual(["--config", "app.ini"], result)
+
+    def test_collect_passthrough_args_internal_flag_allows_following_whitelist(self):
+        """内部 flag 只跳自身，其后白名单参数仍应被识别收集。"""
+        updater = self.make_updater(
+            passthrough_args_whitelist={"--config": "value", "--portable": "flag"},
+        )
+
+        result = updater._collect_passthrough_args(
+            ["--self-update-verify", "--portable", "--config", "app.ini"],
+        )
+
+        self.assertEqual(["--portable", "--config", "app.ini"], result)
+
+    def test_collect_passthrough_args_preserves_duplicates_order(self):
+        """重复的白名单参数应全部保留并保持相对顺序。"""
+        updater = self.make_updater(passthrough_args_whitelist={"--config": "value"})
+
+        result = updater._collect_passthrough_args(
+            ["--config", "a.ini", "--config", "b.ini", "--config", "c.ini"],
+        )
+
+        self.assertEqual(
+            ["--config", "a.ini", "--config", "b.ini", "--config", "c.ini"],
+            result,
+        )
+
+    def test_collect_passthrough_args_keeps_dash_prefixed_equal_value(self):
+        """等号形式的值以 -- 开头时保留原始 token。"""
+        updater = self.make_updater(passthrough_args_whitelist={"--name": "value"})
+
+        result = updater._collect_passthrough_args(["--name=--literal"])
+
+        self.assertEqual(["--name=--literal"], result)
+
+    def test_collect_passthrough_args_ignores_flag_equal_form(self):
+        """白名单 flag 出现 =value 形式时不应收集。"""
+        updater = self.make_updater(passthrough_args_whitelist={"--portable": "flag"})
+
+        result = updater._collect_passthrough_args(["--portable=on"])
+
+        self.assertEqual([], result)
+
+    def test_collect_passthrough_args_skips_missing_value_before_flag(self):
+        """value 参数下一 token 以 -- 开头时应跳过并记录 warning。"""
+        updater = self.make_updater(
+            passthrough_args_whitelist={"--config": "value", "--portable": "flag"},
+        )
+
+        with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+            result = updater._collect_passthrough_args(["--config", "--portable"])
+
+        self.assertEqual(["--portable"], result)
+        self.assertIn("参数缺少值", "\n".join(captured.output))
+
+    def test_collect_passthrough_args_skips_missing_value_at_end(self):
+        """value 参数在 argv 末尾缺值时应跳过并记录 warning。"""
+        updater = self.make_updater(passthrough_args_whitelist={"--config": "value"})
+
+        with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
+            result = updater._collect_passthrough_args(["--config"])
+
+        self.assertEqual([], result)
+        self.assertIn("参数缺少值", "\n".join(captured.output))
+
+    def test_collect_passthrough_args_without_whitelist_collects_nothing(self):
+        """未配置白名单时采集结果应为空。"""
+        updater = self.make_updater()
+
+        result = updater._collect_passthrough_args(["--config", "app.ini"])
+
+        self.assertEqual([], result)
+
+    def test_retry_reuses_original_launch_snapshot(self):
+        """retry=True 且已有同版本有效状态时应沿用原启动参数快照。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            program_dir = root / "program"
+            program_dir.mkdir()
+            current_exe = program_dir / "App.exe"
+            current_exe.write_bytes(b"old")
+            temp_folder = root / "self-update"
+            updater = self.make_updater(
+                temp_folder=str(temp_folder),
+                post_update_action="exit",
+                passthrough_args_whitelist={"--config": "value"},
+            )
+            self._prepare_launch_snapshot_state(program_dir)
+
+            self._run_update_prepare(
+                updater,
+                current_exe,
+                [str(current_exe), "--retry-update"],
+                retry=True,
+            )
+
+            loaded = UpdateState.load(base_dir=program_dir)
+            self.assertIsNotNone(loaded)
+            self.assertEqual("2", loaded.get("Protocol", "schema_version"))
+            self.assertEqual("exit", loaded.get("LaunchArgs", "post_update_action"))
+            self.assertEqual(
+                '["--config","original.ini"]',
+                loaded.get("LaunchArgs", "passthrough_args_json"),
+            )
+
+    def test_normal_update_recollects_same_version_launch_snapshot(self):
+        """普通 check_self_update 即使已有同版本状态也应重新采集当前 argv。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            program_dir = root / "program"
+            program_dir.mkdir()
+            current_exe = program_dir / "App.exe"
+            current_exe.write_bytes(b"old")
+            temp_folder = root / "self-update"
+            updater = self.make_updater(
+                temp_folder=str(temp_folder),
+                post_update_action="start",
+                passthrough_args_whitelist={"--config": "value"},
+            )
+            self._prepare_launch_snapshot_state(program_dir)
+
+            self._run_update_prepare(
+                updater,
+                current_exe,
+                [str(current_exe), "--config", "new.ini"],
+            )
+
+            loaded = UpdateState.load(base_dir=program_dir)
+            self.assertIsNotNone(loaded)
+            self.assertEqual("2", loaded.get("Protocol", "schema_version"))
+            self.assertEqual("start", loaded.get("LaunchArgs", "post_update_action"))
+            self.assertEqual(
+                '["--config","new.ini"]',
+                loaded.get("LaunchArgs", "passthrough_args_json"),
+            )
+
+    def test_retry_chain_preserves_original_launch_snapshot(self):
+        """首次写快照后模拟回滚重试，retry=True 时原快照保持不变。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            program_dir = root / "program"
+            program_dir.mkdir()
+            current_exe = program_dir / "App.exe"
+            current_exe.write_bytes(b"old")
+            temp_folder = root / "self-update"
+            updater = self.make_updater(
+                temp_folder=str(temp_folder),
+                post_update_action="exit",
+                passthrough_args_whitelist={"--config": "value"},
+            )
+
+            # 首次普通更新：采集 --config original.ini 写入快照
+            self._run_update_prepare(
+                updater,
+                current_exe,
+                [str(current_exe), "--config", "original.ini"],
+            )
+
+            # 模拟 helper 回滚完成并增加重试计数
+            state = UpdateState.load(base_dir=program_dir)
+            self.assertIsNotNone(state)
+            state.set("State", "state", "rollback_done")
+            state.set("Retry", "retry_count", "1")
+            state.save()
+
+            # 重试：当前 argv 仅含 --retry-update，应沿用原快照
+            self._run_update_prepare(
+                updater,
+                current_exe,
+                [str(current_exe), "--retry-update"],
+                retry=True,
+            )
+
+            loaded = UpdateState.load(base_dir=program_dir)
+            self.assertIsNotNone(loaded)
+            self.assertEqual("2", loaded.get("Protocol", "schema_version"))
+            self.assertEqual("exit", loaded.get("LaunchArgs", "post_update_action"))
+            self.assertEqual(
+                '["--config","original.ini"]',
+                loaded.get("LaunchArgs", "passthrough_args_json"),
+            )
+
     def test_generated_ps1_uses_injected_program_state_and_runtime_paths(self):
         """生成的 PS1 应使用注入的程序状态、日志和运行时路径。"""
         with tempfile.TemporaryDirectory() as temp_dir:
