@@ -1290,6 +1290,54 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("^\\[\\s*\\]$", launch_args)
         self.assertIn("return ,@()", launch_args)
 
+    def test_helper_verify_failure_rolls_back_before_commit_or_launch(self):
+        """Helper verify 失败应回滚/重试，verify 分支内不执行 commit/start/cleanup。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater, _, paths = self._make_runtime_paths(Path(temp_dir))
+            updater._generate_helper_ps1(paths)
+            content = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+
+            # verify 失败分支存在并调用 Restore-Backup 传递回滚原因
+            self.assertIn('Restore-Backup "verify failed', content)
+            verify_index = content.index("$verifyCode =")
+            fail_index = content.index("$verifyCode -ne 0", verify_index)
+            restore_index = content.index('Restore-Backup "verify failed', verify_index)
+            self.assertLess(verify_index, fail_index)
+            self.assertLess(fail_index, restore_index)
+
+            # 主流程中 verify 分支之后才出现 Commit-Update 调用
+            # （Commit-Update 函数定义在 lifecycle 片段中先于主流程，须从 verify 处向后定位）
+            commit_index = content.index("Commit-Update", verify_index)
+            self.assertLess(restore_index, commit_index)
+
+            # verify 失败分支到 commit 调用之间不含 commit 调用与业务启动/清理调用
+            verify_branch = content[verify_index:commit_index]
+            self.assertNotIn("Commit-Update", verify_branch)
+            self.assertNotIn("Start-NormalAppVisible", verify_branch)
+            self.assertNotIn("Start-CleanupApp", verify_branch)
+
+    def test_helper_commit_failure_exits_before_launch_or_rollback(self):
+        """Helper commit 失败应记录 commit_failed 并 exit 4，不启动业务/清理也不回滚。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater, _, paths = self._make_runtime_paths(Path(temp_dir))
+            updater._generate_helper_ps1(paths)
+            content = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+
+            verify_index = content.index("$verifyCode =")
+            commit_index = content.index("Commit-Update", verify_index)
+            exit4_index = content.index("exit 4", commit_index)
+            self.assertLess(commit_index, exit4_index)
+
+            # Commit-Update 调用被 catch 包裹，catch 内记录 commit_failed 后退出 4
+            commit_catch = content[commit_index:exit4_index]
+            self.assertIn("} catch {", commit_catch)
+            self.assertIn('"commit_failed"', commit_catch)
+
+            # commit 失败路径不启动业务/清理进程，也不触发回滚
+            self.assertNotIn("Start-NormalAppVisible", commit_catch)
+            self.assertNotIn("Start-CleanupApp", commit_catch)
+            self.assertNotIn("Restore-Backup", commit_catch)
+
     def test_readme_documents_verify_version_func_requirement(self):
         """README 应说明未传 version_func 时只校验 SHA256。"""
         readme_path = Path(__file__).resolve().parents[1] / "self_updater" / "README.md"
@@ -3551,6 +3599,144 @@ class PowerShell51IntegrationTest(unittest.TestCase):
             self.assertEqual(
                 "True", alive_text,
                 "cleanup 子进程应仍在运行（启动方未等待其退出）",
+            )
+
+    def test_get_passthrough_args_rejects_non_array_roots(self):
+        """Get-PassthroughArgs 对非数组根 JSON 应返回空数组并记录 warning。"""
+        base = ps1_fragments.generate_common_base_functions_ps1()
+        state = ps1_fragments.generate_common_state_functions_ps1()
+        args = ps1_fragments.generate_helper_launch_args_functions_ps1()
+        cases = {
+            "string_root": '"abc"',
+            "object_root": '{"a":1}',
+            "null_root": "null",
+            "mixed_items": '[1,"a"]',
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name, payload in cases.items():
+                with self.subTest(case=name):
+                    state_file = root / ("state_" + name + ".ini")
+                    state_file.write_text(
+                        "[State]\n"
+                        "state = pending_new_verify\n"
+                        "[LaunchArgs]\n"
+                        "post_update_action = start\n"
+                        "passthrough_args_json = " + payload + "\n",
+                        encoding="utf-8",
+                    )
+                    log_file = root / ("update_" + name + ".log")
+                    out_file = root / ("result_" + name + ".json")
+                    script = (
+                        "$ErrorActionPreference = 'Stop'\n"
+                        + base
+                        + state
+                        + args
+                        + "$scriptTag = 'Test'\n"
+                        + "$stateFile = " + self._ps_single_quote(str(state_file)) + "\n"
+                        + "$logFile = " + self._ps_single_quote(str(log_file)) + "\n"
+                        + "$result = Get-PassthroughArgs\n"
+                        + "$json = ConvertTo-Json -InputObject @($result) -Compress\n"
+                        + "[System.IO.File]::WriteAllText("
+                        + self._ps_single_quote(str(out_file))
+                        + ", $json, [System.Text.Encoding]::UTF8)\n"
+                    )
+                    code, stdout, stderr = self._run_ps(script)
+                    self.assertEqual(
+                        0, code,
+                        msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+                    )
+                    self.assertEqual(
+                        [], json.loads(out_file.read_text(encoding="utf-8-sig")),
+                    )
+                    log_text = (
+                        log_file.read_text(encoding="utf-8")
+                        if log_file.exists() else ""
+                    )
+                    self.assertIn("| WARN |", log_text)
+                    self.assertIn("passthrough_args_json", log_text)
+
+    def test_commit_update_reads_back_state_and_resets_retry(self):
+        """Commit-Update 应写 verified 状态并清零重试计数，回读验证通过。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_file = root / "update_state.ini"
+            state_file.write_text(
+                "[State]\n"
+                "state = pending_new_verify\n"
+                "[Retry]\n"
+                "retry_count = 5\n"
+                "[Files]\n"
+                "backup_file = " + str(root / "missing.backup.exe") + "\n",
+                encoding="utf-8",
+            )
+            log_file = root / "update.log"
+            lock_file = root / "missing.lock"
+            base = ps1_fragments.generate_common_base_functions_ps1()
+            state = ps1_fragments.generate_common_state_functions_ps1()
+            lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+            script = (
+                "$ErrorActionPreference = 'Stop'\n"
+                + base
+                + state
+                + lifecycle
+                + "$scriptTag = 'Test'\n"
+                + "$stateFile = " + self._ps_single_quote(str(state_file)) + "\n"
+                + "$logFile = " + self._ps_single_quote(str(log_file)) + "\n"
+                + "$lockFile = " + self._ps_single_quote(str(lock_file)) + "\n"
+                + "Commit-Update\n"
+            )
+            code, stdout, stderr = self._run_ps(script)
+            self.assertEqual(
+                0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+            )
+            parser = configparser.ConfigParser()
+            parser.read_string(state_file.read_text(encoding="utf-8"))
+            self.assertEqual("verified", parser.get("State", "state"))
+            self.assertEqual("0", parser.get("Retry", "retry_count"))
+            self.assertIn("update committed", log_file.read_text(encoding="utf-8"))
+
+    def test_commit_update_propagates_ini_write_failure(self):
+        """Commit-Update 写入失败时应向上抛异常，不吞掉错误。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            state_file = root / "update_state.ini"
+            state_file.write_text(
+                "[State]\n"
+                "state = pending_new_verify\n"
+                "[Retry]\n"
+                "retry_count = 5\n"
+                "[Files]\n"
+                "backup_file = " + str(root / "missing.backup.exe") + "\n",
+                encoding="utf-8",
+            )
+            log_file = root / "update.log"
+            lock_file = root / "missing.lock"
+            out_file = root / "propagated.txt"
+            base = ps1_fragments.generate_common_base_functions_ps1()
+            state = ps1_fragments.generate_common_state_functions_ps1()
+            lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+            script = (
+                "$ErrorActionPreference = 'Stop'\n"
+                + base
+                + state
+                + lifecycle
+                + "function Write-IniValue($section, $key, $value) { throw 'mocked write failure' }\n"
+                + "$scriptTag = 'Test'\n"
+                + "$stateFile = " + self._ps_single_quote(str(state_file)) + "\n"
+                + "$logFile = " + self._ps_single_quote(str(log_file)) + "\n"
+                + "$lockFile = " + self._ps_single_quote(str(lock_file)) + "\n"
+                + "$propagated = $false\n"
+                + "try { Commit-Update } catch { $propagated = $true }\n"
+                + "$propagated | Out-File -FilePath "
+                + self._ps_single_quote(str(out_file)) + " -Encoding ascii\n"
+            )
+            code, stdout, stderr = self._run_ps(script)
+            self.assertEqual(
+                0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+            )
+            self.assertEqual(
+                "True", out_file.read_text(encoding="ascii").strip(),
             )
 
 
