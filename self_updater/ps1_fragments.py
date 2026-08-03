@@ -139,7 +139,7 @@ def generate_helper_argument_functions_ps1() -> str:
             if ($null -eq $arg) { return '""' }
             $s = [string]$arg
             if ($s -eq '') { return '""' }
-            if ($s -notmatch '[ \t\n"]') { return $s }
+            if ($s -notmatch '[ \t\r\n"]') { return $s }
             $sb = New-Object System.Text.StringBuilder
             [void]$sb.Append('"')
             $backslashes = 0

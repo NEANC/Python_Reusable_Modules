@@ -2927,6 +2927,31 @@ class PowerShell51IntegrationTest(unittest.TestCase):
         """将字符串转义为 PowerShell 单引号字符串字面量。"""
         return "'" + str(value).replace("'", "''") + "'"
 
+    @classmethod
+    def _ps_string_literal(cls, value) -> str:
+        """将字符串转为 PowerShell 字面量，回车用 [char]13 拼接避免脚本内裸 CR。"""
+        text = str(value)
+        if "\r" in text:
+            parts = [cls._ps_single_quote(part) for part in text.split("\r")]
+            return " + [char]13 + ".join(parts)
+        return cls._ps_single_quote(text)
+
+    def _convert_encoding_check_script(self, out_file: Path, value: str) -> str:
+        """构造调用 ConvertTo-WindowsCommandLineArg 并写出编码结果的 PS 脚本。"""
+        base = ps1_fragments.generate_common_base_functions_ps1()
+        args = ps1_fragments.generate_helper_argument_functions_ps1()
+        return (
+            "$ErrorActionPreference = 'Stop'\n"
+            + base
+            + args
+            + "$encoded = ConvertTo-WindowsCommandLineArg ("
+            + self._ps_string_literal(value)
+            + ")\n"
+            + "[System.IO.File]::WriteAllText("
+            + self._ps_single_quote(str(out_file))
+            + ", $encoded, [System.Text.Encoding]::UTF8)\n"
+        )
+
     def _run_ps(self, script: str):
         """在 Windows PowerShell 5.1 中执行脚本，返回 (returncode, stdout, stderr)。"""
         completed = subprocess.run(
@@ -2954,7 +2979,7 @@ class PowerShell51IntegrationTest(unittest.TestCase):
         args = ps1_fragments.generate_helper_argument_functions_ps1()
         lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
         items = [self._ps_single_quote(capture_script), self._ps_single_quote(out_file)]
-        items += [self._ps_single_quote(item) for item in argv]
+        items += [self._ps_string_literal(item) for item in argv]
         array = ", ".join(items)
         return (
             "$ErrorActionPreference = 'Stop'\n"
@@ -2985,6 +3010,7 @@ class PowerShell51IntegrationTest(unittest.TestCase):
             "semicolon": ["a;b"],
             "pipe": ["a|b"],
             "percent_env": ["%VAR%"],
+            "carriage_return": ["line1\rline2"],
         }
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -2992,6 +3018,23 @@ class PowerShell51IntegrationTest(unittest.TestCase):
             out_file = root / "argv.json"
             for name, argv in cases.items():
                 with self.subTest(case=name):
+                    if "\r" in "".join(argv):
+                        # Windows PowerShell 5.1 基于 .NET Framework，其 Process.Start
+                        # 会解析并重建 Arguments（CR/LF 被当作空白分隔符），含 CR 参数
+                        # 无法逐字 round-trip，属于平台限制。此处验证编码函数对含 CR
+                        # 参数输出引号包裹（快速路径字符类包含 \r，不裸传拆分）。
+                        enc_out = root / ("encoded_" + name + ".txt")
+                        script = self._convert_encoding_check_script(enc_out, argv[0])
+                        code, stdout, stderr = self._run_ps(script)
+                        self.assertEqual(
+                            0, code,
+                            msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+                        )
+                        with open(enc_out, "r", encoding="utf-8-sig",
+                                  newline="") as handle:
+                            encoded_text = handle.read()
+                        self.assertEqual('"' + argv[0] + '"', encoded_text)
+                        continue
                     if out_file.exists():
                         out_file.unlink()
                     script = self._argv_capture_script(capture_script, out_file, argv)
@@ -3306,6 +3349,226 @@ class PowerShell51IntegrationTest(unittest.TestCase):
             exit_branch = main_flow[main_flow.index("Start-CleanupApp"):]
             self.assertNotIn("WaitForExit", exit_branch)
             self.assertNotIn("ExitCode", exit_branch)
+
+    def test_cleanup_waits_for_helper_before_deleting_runtime(self):
+        """self_update_cleanup 应等待 helper 进程退出后才删除运行时残留。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            temp_folder = root / "selfupdate"
+            runtime_dir = temp_folder / "v1.2.0"
+            runtime_dir.mkdir(parents=True)
+            helper_ps1 = runtime_dir / "TestApp_Update_Helper.ps1"
+            helper_ps1.write_text("# helper script stub\n", encoding="utf-8")
+            state_file = temp_folder / "update_state.ini"
+            state_file.write_text(
+                "[State]\n"
+                "state = verified\n"
+                "[Files]\n"
+                "target = " + str(root / "App.exe") + "\n"
+                "backup_file = " + str(runtime_dir / "App.backup.exe") + "\n"
+                "new_file = " + str(runtime_dir / "App.new.exe") + "\n"
+                "runtime_dir = " + str(runtime_dir) + "\n"
+                "helper_ps1 = " + str(helper_ps1) + "\n"
+                "update_ps1 = " + str(runtime_dir / "TestApp_Update.ps1") + "\n"
+                "lock_file = " + str(runtime_dir / "update_started.lock") + "\n",
+                encoding="utf-8",
+            )
+
+            # helper 替身：短暂存活 3 秒后自然退出
+            helper = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(3)"],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self._started_pids.append(helper.pid)
+
+            # cleanup 替身：真实调用 self_update_cleanup(helper_pid=helper.pid)
+            stub = root / "cleanup_stub.py"
+            stub.write_text(_CLEANUP_STUB_SOURCE, encoding="utf-8")
+            project_root = Path(__file__).resolve().parent.parent
+            cleanup_proc = subprocess.Popen(
+                [sys.executable, str(stub), str(temp_folder), str(temp_folder),
+                 str(project_root), str(helper.pid)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            try:
+                # helper 存活期间轮询：残留与状态文件必须仍存在（避免竞态删除）
+                poll_deadline = time.time() + 2.5
+                while time.time() < poll_deadline:
+                    self.assertTrue(
+                        helper_ps1.exists(),
+                        "helper 存活期间残留文件不应被删除",
+                    )
+                    self.assertTrue(
+                        state_file.exists(),
+                        "helper 存活期间状态文件不应被删除",
+                    )
+                    time.sleep(0.2)
+                stdout, stderr = cleanup_proc.communicate(timeout=60)
+            finally:
+                if cleanup_proc.poll() is None:
+                    cleanup_proc.kill()
+
+            self.assertEqual(
+                0, cleanup_proc.returncode,
+                msg="cleanup stub failed:\n{0}\n{1}".format(stdout, stderr),
+            )
+            result_file = temp_folder / "cleanup_result.json"
+            self.assertTrue(result_file.exists(), "cleanup 替身未写出结果文件")
+            result = json.loads(result_file.read_text(encoding="utf-8"))
+            self.assertEqual(0, result["code"], msg=result.get("error", ""))
+            self.assertGreaterEqual(
+                result["elapsed"], 2.8,
+                "cleanup 应等待 helper 退出（替身存活约 3 秒）",
+            )
+            # helper 退出后 cleanup 完成全部残留删除
+            self.assertFalse(helper_ps1.exists(), "helper 退出后残留文件应被删除")
+            self.assertFalse(runtime_dir.exists(), "helper 退出后运行时目录应被删除")
+            self.assertFalse(state_file.exists(), "helper 退出后状态文件应被删除")
+            helper.wait(timeout=10)
+
+    def test_cleanup_failure_never_starts_update_protocol(self):
+        """cleanup 启动失败时 Helper 不得产生任何更新协议子进程参数。"""
+        forbidden_flags = (
+            "--retry-update", "--update", "--update-force", "--update-failed",
+        )
+        failure_bodies = {
+            "throw": "    throw 'cleanup starter boom'\n}\n",
+            "false": "    return $false\n}\n",
+            "invalid_process": (
+                "    return [pscustomobject]@{ Name = 'invalid-process' }\n}\n"
+            ),
+        }
+        for name, tail in failure_bodies.items():
+            with self.subTest(failure=name):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    argv_file = root / "argv.json"
+                    cleanup_starter = self._cleanup_starter_recording_body() + tail
+                    code, stdout, stderr, log_text, state_text, _ = self._run_helper_flow(
+                        root, cleanup_starter, argv_file,
+                    )
+                    self._assert_cleanup_failure_outcome(
+                        code, stdout, stderr, log_text, state_text,
+                    )
+                    loaded = json.loads(argv_file.read_text(encoding="utf-8-sig"))
+                    self.assertEqual(
+                        ["--self-update-cleanup", "--self-update-cleanup-parent-pid",
+                         loaded[2]],
+                        loaded,
+                    )
+                    for flag in forbidden_flags:
+                        self.assertNotIn(flag, loaded)
+
+    def test_cleanup_real_child_process_helper_exits_immediately(self):
+        """Helper 启动 cleanup 真实子进程后应立即返回，不等待其完成。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pid_file = root / "child_pid.txt"
+            elapsed_file = root / "elapsed_ms.txt"
+            alive_file = root / "child_alive.txt"
+            base = ps1_fragments.generate_common_base_functions_ps1()
+            state = ps1_fragments.generate_common_state_functions_ps1()
+            args = ps1_fragments.generate_helper_argument_functions_ps1()
+            lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+            script = (
+                "$ErrorActionPreference = 'Stop'\n"
+                + base + state + args + lifecycle
+                + "$sw = [System.Diagnostics.Stopwatch]::StartNew()\n"
+                + "$proc = & $script:CleanupStarter "
+                + self._ps_single_quote(sys.executable)
+                + " @('-c', 'import time; time.sleep(5)')\n"
+                + "$sw.Stop()\n"
+                + "if ($null -eq $proc) { throw 'cleanup starter returned null' }\n"
+                + "$proc.Id | Out-File -FilePath "
+                + self._ps_single_quote(str(pid_file)) + " -Encoding ascii\n"
+                + "$sw.ElapsedMilliseconds | Out-File -FilePath "
+                + self._ps_single_quote(str(elapsed_file)) + " -Encoding ascii\n"
+                + "$alive = $false\n"
+                + "try { if (Get-Process -Id $proc.Id -ErrorAction Stop) { $alive = $true } } catch {}\n"
+                + "$alive | Out-File -FilePath "
+                + self._ps_single_quote(str(alive_file)) + " -Encoding ascii\n"
+                + "exit 0\n"
+            )
+            code, stdout, stderr = self._run_ps(script)
+            self.assertEqual(
+                0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+            )
+            child_pid = int(pid_file.read_text(encoding="ascii").strip())
+            self._started_pids.append(child_pid)
+            elapsed_ms = int(elapsed_file.read_text(encoding="ascii").strip())
+            self.assertLess(elapsed_ms, 2000, "Helper 不应等待 cleanup 子进程完成")
+            # 存活检查必须在 PowerShell 内、启动后立即进行：子进程继承了
+            # powershell 的管道句柄，外部等待会阻塞到子进程退出而无法观察到存活
+            alive_text = alive_file.read_text(encoding="ascii").strip()
+            self.assertEqual(
+                "True", alive_text,
+                "cleanup 子进程应仍在运行（启动方未等待其退出）",
+            )
+
+
+_CLEANUP_STUB_SOURCE = '''#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+
+"""更新清理替身：真实调用 self_update_cleanup 并记录结果。"""
+
+import json
+import logging
+import sys
+import time
+
+from pathlib import Path
+
+
+def main() -> int:
+    """执行更新清理并写出结果文件。"""
+    # 参数：state_dir temp_folder project_root helper_pid
+    state_dir = Path(sys.argv[1])
+    temp_folder = Path(sys.argv[2])
+    project_root = Path(sys.argv[3])
+    helper_pid = int(sys.argv[4])
+
+    # 让 UpdateState.load() 从状态文件所在目录加载 update_state.ini
+    sys.argv[0] = str(state_dir / "app_entry.exe")
+
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from self_updater.self_updater import SelfUpdater
+
+    logger = logging.getLogger("cleanup_stub")
+    logger.addHandler(logging.NullHandler())
+    updater = SelfUpdater(
+        github_repo="owner/repo",
+        asset_pattern=r"App.*",
+        app_name="TestApp",
+        current_version="v1.0.0",
+        proxy="",
+        logger=logger,
+        temp_folder=str(temp_folder),
+    )
+    started = time.time()
+    try:
+        code = updater.self_update_cleanup(helper_pid=helper_pid)
+    except Exception as error:
+        code = 99
+        error_text = repr(error)
+    else:
+        error_text = ""
+    elapsed = time.time() - started
+    result = {"code": code, "elapsed": elapsed, "error": error_text}
+    result_file = state_dir / "cleanup_result.json"
+    result_file.write_text(json.dumps(result), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
 
 
 if __name__ == "__main__":
