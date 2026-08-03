@@ -3374,9 +3374,9 @@ class PowerShell51IntegrationTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            # helper 替身：短暂存活 3 秒后自然退出
+            # helper 替身：短暂存活 5 秒后自然退出（留足 cleanup 启动与轮询时间差）
             helper = subprocess.Popen(
-                [sys.executable, "-c", "import time; time.sleep(3)"],
+                [sys.executable, "-c", "import time; time.sleep(5)"],
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self._started_pids.append(helper.pid)
@@ -3398,6 +3398,7 @@ class PowerShell51IntegrationTest(unittest.TestCase):
             try:
                 # helper 存活期间轮询：残留与状态文件必须仍存在（避免竞态删除）
                 poll_deadline = time.time() + 2.5
+                poll_hits = 0
                 while time.time() < poll_deadline:
                     self.assertTrue(
                         helper_ps1.exists(),
@@ -3407,7 +3408,12 @@ class PowerShell51IntegrationTest(unittest.TestCase):
                         state_file.exists(),
                         "helper 存活期间状态文件不应被删除",
                     )
+                    poll_hits += 1
                     time.sleep(0.2)
+                self.assertGreaterEqual(
+                    poll_hits, 1,
+                    "helper 存活期间至少成功轮询到一次残留文件",
+                )
                 stdout, stderr = cleanup_proc.communicate(timeout=60)
             finally:
                 if cleanup_proc.poll() is None:
@@ -3422,8 +3428,8 @@ class PowerShell51IntegrationTest(unittest.TestCase):
             result = json.loads(result_file.read_text(encoding="utf-8"))
             self.assertEqual(0, result["code"], msg=result.get("error", ""))
             self.assertGreaterEqual(
-                result["elapsed"], 2.8,
-                "cleanup 应等待 helper 退出（替身存活约 3 秒）",
+                result["elapsed"], 2.5,
+                "cleanup 应等待 helper 退出（替身存活约 5 秒）",
             )
             # helper 退出后 cleanup 完成全部残留删除
             self.assertFalse(helper_ps1.exists(), "helper 退出后残留文件应被删除")
