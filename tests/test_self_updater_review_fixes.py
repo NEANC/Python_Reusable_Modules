@@ -1298,6 +1298,22 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("未传 version_func 时仅校验 SHA256", text)
         self.assertNotIn("return  # 或 sys.exit(1)", text)
 
+    def test_readme_documents_post_update_cleanup_protocol(self):
+        """README 应完整记录清理协议、透传白名单与新入口顺序。"""
+        readme_path = Path(__file__).resolve().parents[1] / "self_updater" / "README.md"
+        content = readme_path.read_text(encoding="utf-8")
+
+        self.assertIn("post_update_action", content)
+        self.assertIn("passthrough_args_whitelist", content)
+        self.assertIn("--self-update-cleanup-parent-pid", content)
+        self.assertIn("def create_updater", content)
+        self.assertIn("cleanup_update_residue", content)
+        self.assertNotIn("updater._cleanup_update_residue", content)
+        self.assertNotIn('"--Update"', content)
+        self.assertIn("self_update_cleanup_parent_pid < 0", content)
+        self.assertIn("不进入正常业务主循环", content)
+        self.assertIn("不触发更新重试", content)
+
     def test_download_and_verify_still_checks_sha256_after_download(self):
         """下载成功后仍应由现有流程执行 SHA256 校验。"""
         with tempfile.TemporaryDirectory() as temp_dir:

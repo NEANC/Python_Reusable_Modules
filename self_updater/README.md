@@ -118,12 +118,34 @@ cache_root = os.getenv("LOCALAPPDATA")
 temp_folder = os.path.join(cache_root, "YourApp", "SelfUpdate") if cache_root else None
 logger = logging.getLogger("YourApp")
 
+
+def create_updater() -> SelfUpdater:
+    """统一构造 SelfUpdater，供 retry / cleanup / update / normal 各分支复用。"""
+    is_bundled, package_type = detect_package_type()
+    return SelfUpdater(
+        github_repo="you/your-repo",
+        asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
+        app_name="YourApp",
+        current_version=APP_VERSION,
+        proxy="",
+        # 使用环境变量解析出的基础运行时目录；传 None 时由 SelfUpdater 自动解析
+        temp_folder=temp_folder,
+        logger=logger,
+        is_bundled=is_bundled,
+        package_type=package_type,
+        post_update_action="start",  # "start" 启动新版并透传白名单参数；"exit" 仅启动清理后退出
+        passthrough_args_whitelist={
+            "--config": "value",   # value：透传时需附带参数值
+            "--portable": "flag",  # flag：透传时不附带参数值
+        },
+    )
+
+
 # ── 命令行参数 ──
 parser = argparse.ArgumentParser()
-parser.add_argument("--update", "--Update", action="store_true",
+parser.add_argument("--update", action="store_true",
                     help="仅检查自身更新")
-parser.add_argument("--update-force", "--Update-force", "--Update-Force",
-                    action="store_true", dest="update_force",
+parser.add_argument("--update-force", action="store_true", dest="update_force",
                     help="强制更新自身到最新版本")
 
 # ── 内部参数（必须添加，否则 PS1 脚本启动新版时参数不被识别） ──
@@ -132,8 +154,19 @@ parser.add_argument("--expected-sha256", type=str, default="", help=argparse.SUP
 parser.add_argument("--expected-version", type=str, default="", help=argparse.SUPPRESS)
 parser.add_argument("--retry-update", action="store_true", help=argparse.SUPPRESS)
 parser.add_argument("--update-failed", action="store_true", help=argparse.SUPPRESS)
+parser.add_argument("--self-update-cleanup", action="store_true", help=argparse.SUPPRESS)
+parser.add_argument(
+    "--self-update-cleanup-parent-pid",
+    type=int,
+    default=0,
+    help=argparse.SUPPRESS,
+)
 
 args = parser.parse_args()
+
+# ── 负 PID 校验（内部参数，非法值直接拒绝启动） ──
+if args.self_update_cleanup_parent_pid < 0:
+    parser.error("--self-update-cleanup-parent-pid 不能为负数")
 
 # ── 新版验证模式（PS1 替换后触发） ──
 if args.self_update_verify:
@@ -147,20 +180,8 @@ if args.self_update_verify:
 # ── 重试更新模式（PS1 回滚后触发） ──
 if args.retry_update:
     logger.info("正在重试自更新...")
-    is_bundled, package_type = detect_package_type()
-    updater = SelfUpdater(
-        github_repo="you/your-repo",
-        asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
-        app_name="YourApp",
-        current_version=APP_VERSION,
-        proxy="",
-        # 使用环境变量解析出的基础运行时目录；传 None 时由 SelfUpdater 自动解析
-        temp_folder=temp_folder,
-        logger=logger,
-        is_bundled=is_bundled,
-        package_type=package_type,
-    )
-    need_exit = updater.check_self_update()
+    updater = create_updater()
+    need_exit = updater.check_self_update(retry=True)
     if need_exit:
         sys.exit(0)
     logger.error("重试更新失败，无法获取新版本")
@@ -180,21 +201,18 @@ if args.update_failed:
     input("\n按任意键退出...")
     sys.exit(1)
 
+# ── 清理模式（Helper 异步触发，不进入正常业务主循环） ──
+if args.self_update_cleanup:
+    updater = create_updater()
+    sys.exit(
+        updater.self_update_cleanup(
+            helper_pid=args.self_update_cleanup_parent_pid,
+        )
+    )
+
 # ── 仅检查自身更新 / 强制更新模式 ──
 if args.update or args.update_force:
-    is_bundled, package_type = detect_package_type()
-    updater = SelfUpdater(
-        github_repo="you/your-repo",
-        asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
-        app_name="YourApp",
-        current_version=APP_VERSION,
-        proxy="",
-        # 使用环境变量解析出的基础运行时目录；传 None 时由 SelfUpdater 自动解析
-        temp_folder=temp_folder,
-        logger=logger,
-        is_bundled=is_bundled,
-        package_type=package_type,
-    )
+    updater = create_updater()
     if updater.check_self_update(force=args.update_force):
         logger.info("已将新版本下载到运行时目录，即将退出以完成更新...")
         sys.exit(0)
@@ -202,20 +220,11 @@ if args.update or args.update_force:
     sys.exit(0)
 
 # ── 正常启动：清理上次更新残留 ──
-is_bundled, package_type = detect_package_type()
-updater = SelfUpdater(
-    github_repo="you/your-repo",
-    asset_pattern=r'^YourApp-(Nuitka|PyInstaller)-v[\d.]+.*\.exe$',
-    app_name="YourApp",
-    current_version=APP_VERSION,
-    proxy="",
-    temp_folder=temp_folder,
-    logger=logger,
-    is_bundled=is_bundled,
-    package_type=package_type,
-)
-updater._cleanup_update_residue(logger)
+updater = create_updater()
+updater.cleanup_update_residue(logger)
 ```
+
+启动入口按固定顺序检查：`--self-update-verify`（验证）→ `--retry-update`（重试）→ `--update-failed`（失败提示）→ `--self-update-cleanup`（清理）→ `--update` / `--update-force`（更新）→ 正常业务启动。verify 为静态入口，不需要 `create_updater()`；其余分支复用同一构造函数。
 
 ---
 
@@ -236,14 +245,17 @@ updater._cleanup_update_residue(logger)
 | `self_update_channel` | `str`                | 否   | 更新通道：`"preview"`（默认，兼容旧值 `"release"`）或 `"stable"`（兼容旧值 `"latest"`） |
 | `is_bundled`          | `bool`               | 否   | 预检测的打包标记，避免重复调用 `detect_package_type()`  |
 | `package_type`        | `str`                | 否   | 预检测的打包方式：`"Nuitka"` 或 `"PyInstaller"`         |
+| `post_update_action`      | `str`            | 否   | 更新完成后的启动动作：`"start"`（默认，启动新版并透传白名单参数）或 `"exit"`（由 Helper 异步启动清理后退出，不启动正常主程序） |
+| `passthrough_args_whitelist` | `dict`        | 否   | 允许透传给主程序的命令行参数白名单，形如 `{"--config": "value", "--portable": "flag"}`；`value` 表示透传时需附带参数值，`flag` 表示无值开关；不传则透传为空 |
 
-### `SelfUpdater.check_self_update(force=False) -> bool`
+### `SelfUpdater.check_self_update(force=False, retry=False) -> bool`
 
 检查并准备自身更新。返回 `True` 表示已准备好，调用方应立即 `sys.exit(0)`。
 
 | 参数    | 类型   | 说明                                    |
 | ------- | ------ | --------------------------------------- |
 | `force` | `bool` | `True` 时跳过版本比较，强制升级到最新版 |
+| `retry` | `bool` | 是否为回滚后的重试更新；`True` 时优先沿用上次更新准备写入状态文件的启动参数快照 |
 
 ### `SelfUpdater.self_update_verify(...) -> int`
 
@@ -253,14 +265,18 @@ updater._cleanup_update_residue(logger)
 
 返回值：`0` 通过，`1` 缺少 SHA256，`2` SHA256 不匹配，`3` 版本号不匹配。
 
-### `SelfUpdater.clean_update_cache(...)`
+### `SelfUpdater.clean_update_cache(temp_folder, logger=None) -> bool`
 
 清理由本模块创建并带有效标记的 `temp_folder/UpdateCache/installs/` 下载缓存。首次创建根目录时，模块先在 `UpdateCache` 同目录创建唯一临时文件、写入固定内容、`flush` 与 `fsync`，再通过原子且不覆盖既有 marker 的链接发布；因此并发创建时仅一个调用发布，其他调用重新验证已发布 marker。若发布被中断，临时文件会保留且不会成为授权清理对象。任何已存在但缺少 marker、marker 无效、为符号链接或 Windows reparse point 的 `UpdateCache`，都会在创建 `installs/{version}` 前中止本次下载，且目录树不变、不会补写 marker。清理不会扫描版本目录、不会删除 `temp_folder`，只递归删除 `installs/` 下的普通内容；根目录的未知内容、marker 临时残留以及所有符号链接和 Windows reparse point 均保留。无有效 marker 的历史缓存由调用方自行管理。
 
-### `updater._cleanup_update_residue(logger)`
+### `SelfUpdater.cleanup_update_residue(logger=None) -> bool`
 
 清理上次成功更新后的残留文件。该方法是实例方法，仅处理位于当前实例 `temp_folder` **内且不等于该根目录**的受控运行时目录；从 `temp_folder` 至 `runtime_dir`、以及从 `runtime_dir` 至每个记录残留文件的所有祖先目录，均必须不是符号链接或 Windows reparse point，否则保留节点及其目标并跳过清理。状态文件中指向 `temp_folder` 外部、或等于 `temp_folder` 本身的路径同样会被跳过。清理逻辑会读取程序目录中的 `update_state.ini`，按其中记录的路径删除 `runtime_dir` 内的 PS1 脚本、lock、新版暂存文件和旧版备份文件。`update.log` 会保留，最后删除 `update_state.ini`；状态文件或空目录删除失败会记录 warning，但不会中断后续启动。
-在程序正常启动时调用，确保 exe 目录保持整洁。
+在程序正常启动时调用，确保 exe 目录保持整洁。旧私有方法 `_cleanup_update_residue` 仅作为兼容包装保留，不再建议直接调用。
+
+### `SelfUpdater.self_update_cleanup(helper_pid=None, logger=None) -> int`
+
+等待 helper 进程退出并清理更新残留与下载缓存，供 `--self-update-cleanup` 模式调用。`helper_pid` 为 `None` 或 `0` 时无需等待，直接执行清理；为负数时抛出 `ValueError`。返回 `0` 表示全部清理成功，`1` 表示存在失败项；返回值仅用于诊断，Helper 不等待、不传播该退出码。清理失败只记录日志，不影响已验证并提交的新版本，不触发更新重试。本模式完成清理后直接退出，不进入正常业务主循环。
 
 ### `SelfUpdater.rollback(logger=None) -> bool`
 
@@ -347,7 +363,9 @@ Helper.ps1:
 ├── 启动新版程序 --self-update-verify
 │   ├── SHA256 自检
 │   └── 版本号自检（需调用方传入 version_func）
-├── 验证通过 → 提交 (Commit-Update) → 启动新版
+├── 验证通过 → 提交 (Commit-Update)
+│   ├── post_update_action="start" → 启动新版并透传白名单参数
+│   └── post_update_action="exit" → 异步启动 --self-update-cleanup 后退出，不启动正常主程序
 └── 验证失败 → 回滚 (Restore-Backup) → 重试 / 禁用
 ```
 
@@ -362,6 +380,24 @@ Update.ps1:
 ├── 移动 target → backup_file
 └── 移动 new_file → target
 ```
+
+### 更新后启动动作与参数透传
+
+`SelfUpdater.__init__` 的两个新增参数控制新版启动行为：
+
+- `post_update_action="start"`（默认）：验证通过并提交后，由 Helper 直接启动新版，并按白名单透传采集到的启动参数。
+- `post_update_action="exit"`：验证通过并提交后，Helper 仅异步启动清理进程（携带 `--self-update-cleanup` 与 `--self-update-cleanup-parent-pid`）后退出，不启动正常主程序；清理进程完成残留与缓存清理后自行退出。Helper 不等待清理进程结束，也不传播其退出码。
+
+`passthrough_args_whitelist` 声明允许透传给主程序的参数及其取值方式：
+
+```python
+passthrough_args_whitelist={
+    "--config": "value",   # value：透传时需附带参数值
+    "--portable": "flag",  # flag：透传时不附带参数值
+}
+```
+
+采集时仅匹配白名单中的参数，未列入白名单的参数（包括内部更新参数）一律丢弃；参数值可通过空格分隔或 `=` 形式传入。透传只覆盖新版进程的 argv，不覆盖 cwd 与 env。回滚后的重试更新（`check_self_update(retry=True)`）会优先沿用上次更新准备写入状态文件的参数快照。
 
 ### PowerShell SHA256 回退
 
@@ -395,6 +431,12 @@ Helper.ps1 和 Update.ps1 都通过 `Get-SHA256($filePath)` 计算文件哈希�
 | `{exe_stem}.backup.exe` | `runtime_dir` | 旧版 exe 备份文件，用于校验失败或手动回滚。 |
 
 正常情况下，更新成功后的下一次正常启动会按 `update_state.ini` 记录的绝对路径清理 `runtime_dir` 中的运行时文件；`update.log` 会保留，最后删除 `update_state.ini`。
+
+`update_state.ini` 额外包含两个节：
+
+- `[Protocol] schema_version=2`：更新协议版本。Helper 据此判定新版程序的启动参数解析方式；回滚重试时，仅当协议版本一致才会沿用上次写入的启动参数快照。
+- `[LaunchArgs] post_update_action`：本次更新后的启动动作，取值 `start` 或 `exit`，对应实例配置或沿用快照。
+- `[LaunchArgs] passthrough_args_json`：按白名单采集的透传参数，以紧凑 JSON 数组保存，如 `["--config","app.ini","--portable"]`。
 
 ---
 
