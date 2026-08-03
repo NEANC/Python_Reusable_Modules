@@ -733,8 +733,9 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
                     base_dir=program_dir,
                 )
-                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                result = updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
+            self.assertFalse(result)
             self.assertTrue(external_dir.exists())
             self.assertTrue(external_file.exists())
 
@@ -762,8 +763,9 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
                     base_dir=program_dir,
                 )
-                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                result = updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
+            self.assertFalse(result)
             self.assertTrue(residue_file.exists())
             self.assertTrue(temp_folder.exists())
 
@@ -790,8 +792,9 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
                     base_dir=program_dir,
                 )
-                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                result = updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
+            self.assertFalse(result)
             self.assertTrue(external_dir.exists())
             self.assertTrue(external_file.exists())
             self.assertTrue(external_empty_dir.exists())
@@ -2521,11 +2524,86 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                         side_effect=OSError("access denied"),
                 ):
                     with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
-                        updater.cleanup_update_residue(
+                        result = updater.cleanup_update_residue(
                             logging.getLogger("SelfUpdaterTest"),
                         )
 
+            self.assertFalse(result)
             self.assertIn("删除更新状态文件失败", "\n".join(captured.output))
+
+    def test_cleanup_update_residue_no_state_file_returns_true(self):
+        """无状态文件时清理残留应返回 True 且不抛异常。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater = self.make_updater(temp_folder=str(root))
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: None
+                result = updater.cleanup_update_residue(
+                    logging.getLogger("SelfUpdaterTest"),
+                )
+
+            self.assertTrue(result)
+
+    def test_cleanup_update_residue_non_verified_state_returns_true_and_keeps_state(self):
+        """状态非 verified 时清理残留应返回 True 且保留状态文件不修改。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "rollback_done"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_version"] = "v1.2.0"
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                result = updater.cleanup_update_residue(
+                    logging.getLogger("SelfUpdaterTest"),
+                )
+
+            self.assertTrue(result)
+            loaded = UpdateState.load(base_dir=program_dir)
+            self.assertIsNotNone(loaded)
+            self.assertEqual("rollback_done", loaded["state"])
+            self.assertEqual("v1.2.0", loaded["new_version"])
+
+    def test_cleanup_update_residue_preserves_state_after_runtime_dir_enumeration_failure(self):
+        """运行时目录枚举失败时清理残留应返回 False 并保留状态文件。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(paths["new_file"])
+            state["backup_file"] = str(paths["backup_file"])
+            state["helper_ps1"] = str(paths["helper_ps1"])
+            state["update_ps1"] = str(paths["update_ps1"])
+            state["lock_file"] = str(paths["lock_file"])
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                with patch.object(Path, "iterdir", side_effect=OSError("access denied")):
+                    result = updater.cleanup_update_residue(
+                        logging.getLogger("SelfUpdaterTest"),
+                    )
+
+            self.assertFalse(result)
+            self.assertTrue((program_dir / UpdateState.STATE_FILE_NAME).exists())
+            loaded = UpdateState.load(base_dir=program_dir)
+            self.assertIsNotNone(loaded)
+            self.assertEqual("verified", loaded["state"])
 
     def test_remove_marked_cache_contents_logs_rmdir_oserror(self):
         """缓存空目录删除失败时应记录 warning。"""
