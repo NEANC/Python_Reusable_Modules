@@ -37,7 +37,9 @@ from .ps1_fragments import generate_common_base_functions_ps1
 from .ps1_fragments import generate_common_state_functions_ps1
 from .ps1_fragments import generate_helper_argument_functions_ps1
 from .ps1_fragments import generate_helper_file_cleanup_functions_ps1
+from .ps1_fragments import generate_helper_launch_args_functions_ps1
 from .ps1_fragments import generate_helper_lifecycle_functions_ps1
+from .ps1_fragments import generate_helper_main_flow_ps1
 from .ps1_fragments import generate_helper_retry_functions_ps1
 from .ps1_fragments import generate_move_with_retry_ps1
 from .ps1_fragments import generate_sha256_function_ps1
@@ -824,70 +826,9 @@ class SelfUpdater:
         ps1_content += generate_helper_retry_functions_ps1()
         ps1_content += generate_helper_file_cleanup_functions_ps1()
         ps1_content += generate_move_with_retry_ps1()
+        ps1_content += generate_helper_launch_args_functions_ps1()
         ps1_content += generate_helper_lifecycle_functions_ps1()
-        ps1_content += textwrap.dedent(r"""
-
-            try {
-                Set-UpdateStatus "helper_started" "helper_started" "更新 Helper 已启动" 10 "INFO"
-
-                if ($ParentPid -gt 0) {
-                    Set-UpdateStatus "helper_started" "wait_parent_exit" "等待主程序退出，PID: $ParentPid" 15 "INFO"
-                    try { Wait-Process -Id $ParentPid -Timeout 60 -ErrorAction Stop }
-                    catch {
-                        $p = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
-                        if ($p) { throw "parent still alive: $ParentPid" }
-                    }
-                }
-
-                Set-UpdateStatus "replacing" "run_update_script" "开始执行文件替换脚本" 30 "INFO"
-                $updateCode = Start-ProcWait "powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $updatePs1) 120
-                if ($updateCode -ne 0) {
-                    Restore-Backup "update.ps1 failed: exit $updateCode"
-                }
-
-                Set-UpdateStatus "replacing" "verify_target_hash" "校验替换后的目标文件 SHA256" 60 "INFO"
-                $target    = Read-IniValue "Files" "target"
-                $newSha256 = Read-IniValue "Version" "new_sha256"
-                Assert-NotEmpty "Files.target" $target
-                if ($newSha256) {
-                    $actual = Get-SHA256 $target
-                    if ($actual -ne $newSha256.ToLowerInvariant()) {
-                        Restore-Backup "target hash mismatch after replace"
-                    }
-                }
-
-                Set-UpdateStatus "pending_new_verify" "start_new_exe_verify" "启动新版程序进行自检" 75 "INFO"
-                $newVersion = Read-IniValue "Version" "new_version"
-                $verifyArgs = @('--self-update-verify')
-                if ($newSha256) {
-                    $verifyArgs += @('--expected-sha256', $newSha256)
-                }
-                if ($newVersion) {
-                    $verifyArgs += @('--expected-version', $newVersion)
-                }
-                $verifyCode = Start-ProcWait $target $verifyArgs 60 $true
-                if ($verifyCode -ne 0) {
-                    Restore-Backup "verify failed: exit $verifyCode"
-                }
-
-                Set-UpdateStatus "pending_new_verify" "commit_update" "新版验证通过，开始提交更新" 100 "INFO"
-                try {
-                    Commit-Update
-                } catch {
-                    try {
-                        Set-UpdateStatus "pending_new_verify" "commit_failed" "提交更新失败: $($_.Exception.Message)" 100 "ERROR"
-                    } catch {
-                        Write-Log "ERROR" "failed to record commit failure: $($_.Exception.Message)"
-                    }
-                    exit 4
-                }
-                Start-NormalAppVisible $target
-                exit 0
-            } catch {
-                Write-Log "ERROR" "helper error: $($_.Exception.Message)"
-                Restore-Backup $_.Exception.Message
-            }
-        """).lstrip("\n")
+        ps1_content += generate_helper_main_flow_ps1()
 
         script_path.write_text(ps1_content, encoding='utf-8-sig')
 

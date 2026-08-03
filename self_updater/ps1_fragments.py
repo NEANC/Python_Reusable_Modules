@@ -196,6 +196,59 @@ def generate_helper_file_cleanup_functions_ps1() -> str:
     """)
 
 
+def generate_helper_launch_args_functions_ps1() -> str:
+    """生成 Helper 专用的启动协议与透传参数解析 PowerShell 函数片段。"""
+    return textwrap.dedent(r"""
+        function Get-LaunchProtocolVersion {
+            $version = [string](Read-IniValue "Protocol" "schema_version")
+            return $version
+        }
+
+        function Read-LaunchAction {
+            $action = [string](Read-IniValue "LaunchArgs" "post_update_action")
+            if ($action -eq '') { return 'start' }
+            if ($action -ne 'start' -and $action -ne 'exit') {
+                throw "unsupported post_update_action: $action"
+            }
+            return $action
+        }
+
+        function Get-PassthroughArgs {
+            $raw = [string](Read-IniValue "LaunchArgs" "passthrough_args_json")
+            $trimmed = $raw.Trim()
+            if ($trimmed -eq '') {
+                Write-Log "WARN" "passthrough_args_json root is not an array"
+                return ,@()
+            }
+            if ($trimmed -match '^\[\s*\]$') { return ,@() }
+            if (-not ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']'))) {
+                Write-Log "WARN" "passthrough_args_json root is not an array"
+                return ,@()
+            }
+            try {
+                $parsed = ConvertFrom-Json -InputObject $trimmed
+            } catch {
+                Write-Log "WARN" "passthrough_args_json parse failed: $($_.Exception.Message)"
+                return ,@()
+            }
+            if ($null -eq $parsed -or $parsed -is [string] -or $parsed -isnot [System.Collections.IEnumerable]) {
+                Write-Log "WARN" "passthrough_args_json root is not an array"
+                return ,@()
+            }
+            $items = @($parsed)
+            $result = @()
+            foreach ($item in $items) {
+                if ($null -eq $item -or $item -isnot [string]) {
+                    Write-Log "WARN" "passthrough_args_json contains non-string item"
+                    return ,@()
+                }
+                $result += [string]$item
+            }
+            return ,$result
+        }
+    """)
+
+
 def generate_helper_lifecycle_functions_ps1() -> str:
     """生成 Helper 专用的 PowerShell 更新生命周期函数片段。"""
     return textwrap.dedent(r"""
@@ -341,6 +394,56 @@ def generate_helper_lifecycle_functions_ps1() -> str:
                 }
             }
         }
+
+        $script:CleanupStarter = {
+            param($filePath, [string[]]$argList)
+            $workDir = Split-Path -Parent $filePath
+
+            $oldReset = [Environment]::GetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT", "Process")
+            $oldPyi = @{}
+            $pyiKeys = @("_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
+                         "_PYI_APPLICATION_HOME_DIR", "_PYI_SPLASH_IPC",
+                         "_PYI_LINUX_PROCESS_NAME")
+            foreach ($k in $pyiKeys) {
+                $oldPyi[$k] = [Environment]::GetEnvironmentVariable($k, "Process")
+            }
+
+            try {
+                [Environment]::SetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT", "1", "Process")
+                foreach ($k in $pyiKeys) {
+                    [Environment]::SetEnvironmentVariable($k, $null, "Process")
+                }
+
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $filePath
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $false
+                $psi.WorkingDirectory = $workDir
+                $encoded = @($argList | ForEach-Object { ConvertTo-WindowsCommandLineArg $_ })
+                $psi.Arguments = if ($encoded.Count -gt 0) { $encoded -join ' ' } else { '' }
+
+                $proc = [System.Diagnostics.Process]::Start($psi)
+                if ($null -eq $proc) { throw "Process.Start returned null" }
+                return $proc
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable("PYINSTALLER_RESET_ENVIRONMENT", $oldReset, "Process")
+                foreach ($k in $pyiKeys) {
+                    [Environment]::SetEnvironmentVariable($k, $oldPyi[$k], "Process")
+                }
+            }
+        }
+
+        function Start-CleanupApp($filePath, [string[]]$argList) {
+            try {
+                $proc = & $script:CleanupStarter $filePath $argList
+                if ($null -eq $proc) { return $false }
+                if ($proc.Id -gt 0) { return $true }
+                return $false
+            } catch {
+                return $false
+            }
+        }
     """)
 
 
@@ -391,3 +494,100 @@ def generate_sha256_function_ps1() -> str:
             throw "Get-SHA256 failed: $lastError"
         }
     """)
+
+
+def generate_helper_main_flow_ps1() -> str:
+    """生成 Helper 主流程 PowerShell 脚本片段。
+
+    依赖生命周期片段与启动参数解析片段，按更新后动作分支执行：
+    start 启动业务主程序，exit 启动 cleanup 进程后立即退出。
+    """
+    return textwrap.dedent(r"""
+
+        try {
+            Set-UpdateStatus "helper_started" "helper_started" "更新 Helper 已启动" 10 "INFO"
+
+            if ($ParentPid -gt 0) {
+                Set-UpdateStatus "helper_started" "wait_parent_exit" "等待主程序退出，PID: $ParentPid" 15 "INFO"
+                try { Wait-Process -Id $ParentPid -Timeout 60 -ErrorAction Stop }
+                catch {
+                    $p = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
+                    if ($p) { throw "parent still alive: $ParentPid" }
+                }
+            }
+
+            Set-UpdateStatus "replacing" "run_update_script" "开始执行文件替换脚本" 30 "INFO"
+            $updateCode = Start-ProcWait "powershell.exe" @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $updatePs1) 120
+            if ($updateCode -ne 0) {
+                Restore-Backup "update.ps1 failed: exit $updateCode"
+            }
+
+            Set-UpdateStatus "replacing" "verify_target_hash" "校验替换后的目标文件 SHA256" 60 "INFO"
+            $target    = Read-IniValue "Files" "target"
+            $newSha256 = Read-IniValue "Version" "new_sha256"
+            Assert-NotEmpty "Files.target" $target
+            if ($newSha256) {
+                $actual = Get-SHA256 $target
+                if ($actual -ne $newSha256.ToLowerInvariant()) {
+                    Restore-Backup "target hash mismatch after replace"
+                }
+            }
+
+            Set-UpdateStatus "pending_new_verify" "start_new_exe_verify" "启动新版程序进行自检" 75 "INFO"
+            $newVersion = Read-IniValue "Version" "new_version"
+            $verifyArgs = @('--self-update-verify')
+            if ($newSha256) {
+                $verifyArgs += @('--expected-sha256', $newSha256)
+            }
+            if ($newVersion) {
+                $verifyArgs += @('--expected-version', $newVersion)
+            }
+            $verifyCode = Start-ProcWait $target $verifyArgs 60 $true
+            if ($verifyCode -ne 0) {
+                Restore-Backup "verify failed: exit $verifyCode"
+            }
+
+            Set-UpdateStatus "pending_new_verify" "commit_update" "新版验证通过，开始提交更新" 100 "INFO"
+            try {
+                Commit-Update
+            } catch {
+                try {
+                    Set-UpdateStatus "pending_new_verify" "commit_failed" "提交更新失败: $($_.Exception.Message)" 100 "ERROR"
+                } catch {
+                    Write-Log "ERROR" "failed to record commit failure: $($_.Exception.Message)"
+                }
+                exit 4
+            }
+
+            $schemaVersion = Get-LaunchProtocolVersion
+            if ($schemaVersion -eq '') {
+                $postUpdateAction = 'start'
+                $passthroughArgs = @()
+            } elseif ($schemaVersion -ne '2') {
+                Write-Log "ERROR" "unsupported schema_version: $schemaVersion"
+                exit 4
+            } else {
+                try {
+                    $postUpdateAction = Read-LaunchAction
+                    $passthroughArgs = Get-PassthroughArgs
+                } catch {
+                    Write-Log "ERROR" "invalid launch config: $($_.Exception.Message)"
+                    exit 4
+                }
+            }
+
+            if ($postUpdateAction -eq 'start') {
+                Start-NormalAppVisible $target $passthroughArgs
+            } else {
+                if (Start-CleanupApp $target @('--self-update-cleanup', '--self-update-cleanup-parent-pid', "$PID")) {
+                    Write-Log "INFO" "cleanup process started"
+                } else {
+                    Write-Log "WARN" "cleanup start failed: $target"
+                }
+            }
+            exit 0
+        } catch {
+            Write-Log "ERROR" "helper error: $($_.Exception.Message)"
+            Restore-Backup $_.Exception.Message
+        }
+    """).lstrip("\n")

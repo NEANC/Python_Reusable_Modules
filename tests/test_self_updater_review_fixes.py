@@ -1237,6 +1237,53 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 update_text.index("function Set-UpdateStatus"),
             )
 
+    def test_helper_contains_start_and_exit_post_update_branches(self):
+        """生成的 Helper 应包含 start/exit 更新后动作分支与 cleanup 启动器调用。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater, _, paths = self._make_runtime_paths(Path(temp_dir))
+            updater._generate_helper_ps1(paths)
+            content = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+
+            verify_index = content.index("$verifyCode =")
+            commit_index = content.index("Commit-Update", verify_index)
+            self.assertLess(verify_index, commit_index)
+            self.assertIn("Start-NormalAppVisible $target $passthroughArgs", content)
+            self.assertIn("--self-update-cleanup-parent-pid", content)
+            self.assertIn("$PID", content)
+            self.assertNotIn("Start-ProcWait $target @('--self-update-cleanup'", content)
+            self.assertIn('Write-Log "WARN" "cleanup start failed:', content)
+
+    def test_helper_launch_protocol_contracts(self):
+        """Helper 应支持旧协议回退、拒绝未知协议版本且提交前不标记已验证。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            updater, _, paths = self._make_runtime_paths(Path(temp_dir))
+            updater._generate_helper_ps1(paths)
+            content = paths["helper_ps1"].read_text(encoding="utf-8-sig")
+
+            self.assertIn("if ($schemaVersion -eq '') {", content)
+            self.assertIn("$postUpdateAction = 'start'", content)
+            self.assertIn("$passthroughArgs = @()", content)
+            self.assertIn('Write-Log "ERROR" "unsupported schema_version:', content)
+            self.assertIn("exit 4", content)
+
+            verify_index = content.index("$verifyCode =")
+            commit_index = content.index("Commit-Update", verify_index)
+            self.assertNotIn('Set-UpdateStatus "verified"', content[:commit_index])
+
+    def test_helper_launch_args_parse_contracts(self):
+        """Get-PassthroughArgs 应对损坏/非数组/混合类型 JSON 置空参数并记录 warning。"""
+        launch_args = ps1_fragments.generate_helper_launch_args_functions_ps1()
+
+        self.assertIn("function Get-LaunchProtocolVersion", launch_args)
+        self.assertIn("function Read-LaunchAction", launch_args)
+        self.assertIn("function Get-PassthroughArgs", launch_args)
+        self.assertIn('Read-IniValue "LaunchArgs" "passthrough_args_json"', launch_args)
+        self.assertIn('Write-Log "WARN" "passthrough_args_json root is not an array', launch_args)
+        self.assertIn('Write-Log "WARN" "passthrough_args_json parse failed:', launch_args)
+        self.assertIn('Write-Log "WARN" "passthrough_args_json contains non-string item', launch_args)
+        self.assertIn("^\\[\\s*\\]$", launch_args)
+        self.assertIn("return ,@()", launch_args)
+
     def test_readme_documents_verify_version_func_requirement(self):
         """README 应说明未传 version_func 时只校验 SHA256。"""
         readme_path = Path(__file__).resolve().parents[1] / "self_updater" / "README.md"
@@ -2728,6 +2775,212 @@ class PowerShell51IntegrationTest(unittest.TestCase):
                     )
                     read_back = out_file.read_text(encoding="utf-8-sig")
                     self.assertEqual(payload, read_back)
+
+    def _write_helper_flow_state(self, root: Path, action="exit") -> Path:
+        """创建 Helper 主流程测试用状态文件并返回路径。"""
+        state_file = root / "update_state.ini"
+        state_file.write_text(
+            "[State]\n"
+            "state = downloaded_verified\n"
+            "[Files]\n"
+            "target = " + str(root / "App.exe") + "\n"
+            "backup_file = " + str(root / "App.backup.exe") + "\n"
+            "[Version]\n"
+            "new_version = v1.2.0\n"
+            "[Protocol]\n"
+            "schema_version = 2\n"
+            "[LaunchArgs]\n"
+            "post_update_action = " + action + "\n"
+            "passthrough_args_json = []\n",
+            encoding="utf-8",
+        )
+        return state_file
+
+    def _helper_main_flow_script(self, state_file: Path, log_file: Path,
+                                 lock_file: Path, cleanup_starter_body: str,
+                                 argv_file: Path = None) -> str:
+        """构造执行 Helper 主流程分支的 PS 脚本，注入 cleanup 启动器替身。"""
+        base = ps1_fragments.generate_common_base_functions_ps1()
+        state = ps1_fragments.generate_common_state_functions_ps1()
+        args = ps1_fragments.generate_helper_argument_functions_ps1()
+        sha256 = ps1_fragments.generate_sha256_function_ps1()
+        retry = ps1_fragments.generate_helper_retry_functions_ps1()
+        cleanup = ps1_fragments.generate_helper_file_cleanup_functions_ps1()
+        move = ps1_fragments.generate_move_with_retry_ps1()
+        launch_args = ps1_fragments.generate_helper_launch_args_functions_ps1()
+        lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+        main_flow = ps1_fragments.generate_helper_main_flow_ps1()
+        lines = [
+            "$ErrorActionPreference = 'Stop'",
+            "$scriptTag = 'Test'",
+            "$stateFile = " + self._ps_single_quote(str(state_file)),
+            "$logFile = " + self._ps_single_quote(str(log_file)),
+            "$lockFile = " + self._ps_single_quote(str(lock_file)),
+            "$updatePs1 = " + self._ps_single_quote(str(lock_file) + ".update.ps1"),
+            "$ParentPid = 0",
+            "try { New-Item -Path $lockFile -ItemType File -Force | Out-Null } catch {}",
+        ]
+        if argv_file is not None:
+            lines.append("$argvFile = " + self._ps_single_quote(str(argv_file)))
+        script = "\n".join(lines) + "\n"
+        script += base + state + args + sha256 + retry + cleanup + move
+        script += launch_args + lifecycle
+        script += cleanup_starter_body + "\n"
+        script += "function Start-ProcWait { return 0 }\n"
+        script += main_flow + "\n"
+        return script
+
+    def _run_helper_flow(self, root: Path, cleanup_starter_body: str,
+                         argv_file: Path = None):
+        """运行 Helper 主流程分支脚本并返回执行结果与产物内容。"""
+        state_file = self._write_helper_flow_state(root)
+        log_file = root / "update.log"
+        lock_file = root / "update_started.lock"
+        script = self._helper_main_flow_script(
+            state_file, log_file, lock_file, cleanup_starter_body, argv_file,
+        )
+        started = time.time()
+        code, stdout, stderr = self._run_ps(script)
+        elapsed = time.time() - started
+        log_text = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+        state_text = state_file.read_text(encoding="utf-8")
+        return code, stdout, stderr, log_text, state_text, elapsed
+
+    def _assert_cleanup_failure_outcome(self, code, stdout, stderr,
+                                        log_text, state_text):
+        """断言 cleanup 启动失败时 Helper 仍成功退出且保持 verified 状态。"""
+        self.assertEqual(
+            0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+        )
+        parser = configparser.ConfigParser()
+        parser.read_string(state_text)
+        self.assertEqual("verified", parser.get("State", "state"))
+        self.assertIn("cleanup start failed:", log_text)
+        self.assertNotIn("rollback", log_text)
+        self.assertNotIn("回滚", log_text)
+
+    @staticmethod
+    def _cleanup_starter_recording_body() -> str:
+        """返回记录传入 argv 的 cleanup 启动器替身公共开头。"""
+        return (
+            "$script:CleanupStarter = {\n"
+            "    param($filePath, [string[]]$argList)\n"
+            "    $json = @($argList) | ConvertTo-Json -Compress\n"
+            "    [System.IO.File]::WriteAllText($argvFile, $json, [System.Text.Encoding]::UTF8)\n"
+        )
+
+    def test_cleanup_start_exception_keeps_helper_success(self):
+        """Start-CleanupApp 抛异常时 Helper 应记录 warning、保持 verified 并退出 0。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            argv_file = root / "argv.json"
+            cleanup_starter = (
+                self._cleanup_starter_recording_body()
+                + "    throw 'cleanup starter boom'\n"
+                + "}\n"
+            )
+            code, stdout, stderr, log_text, state_text, _ = self._run_helper_flow(
+                root, cleanup_starter, argv_file,
+            )
+            self._assert_cleanup_failure_outcome(
+                code, stdout, stderr, log_text, state_text,
+            )
+            loaded = json.loads(argv_file.read_text(encoding="utf-8-sig"))
+            self.assertEqual(
+                ["--self-update-cleanup", "--self-update-cleanup-parent-pid", loaded[2]],
+                loaded,
+            )
+            self.assertRegex(loaded[2], r"^\d+$")
+
+    def test_cleanup_start_false_keeps_helper_success(self):
+        """Start-CleanupApp 返回 $false 时 Helper 应记录 warning、保持 verified 并退出 0。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            argv_file = root / "argv.json"
+            cleanup_starter = (
+                self._cleanup_starter_recording_body()
+                + "    return $false\n"
+                + "}\n"
+            )
+            code, stdout, stderr, log_text, state_text, _ = self._run_helper_flow(
+                root, cleanup_starter, argv_file,
+            )
+            self._assert_cleanup_failure_outcome(
+                code, stdout, stderr, log_text, state_text,
+            )
+            loaded = json.loads(argv_file.read_text(encoding="utf-8-sig"))
+            self.assertEqual(
+                ["--self-update-cleanup", "--self-update-cleanup-parent-pid", loaded[2]],
+                loaded,
+            )
+
+    def test_cleanup_start_without_process_keeps_helper_success(self):
+        """Start-CleanupApp 返回无 PID 的无效对象时 Helper 应记录 warning 并退出 0。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            argv_file = root / "argv.json"
+            cleanup_starter = (
+                self._cleanup_starter_recording_body()
+                + "    return [pscustomobject]@{ Name = 'invalid-process' }\n"
+                + "}\n"
+            )
+            code, stdout, stderr, log_text, state_text, _ = self._run_helper_flow(
+                root, cleanup_starter, argv_file,
+            )
+            self._assert_cleanup_failure_outcome(
+                code, stdout, stderr, log_text, state_text,
+            )
+            loaded = json.loads(argv_file.read_text(encoding="utf-8-sig"))
+            self.assertEqual(
+                ["--self-update-cleanup", "--self-update-cleanup-parent-pid", loaded[2]],
+                loaded,
+            )
+
+    def test_cleanup_start_success_does_not_wait(self):
+        """Start-CleanupApp 成功后 Helper 应立即退出，不等待也不读取 ExitCode。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            argv_file = root / "argv.json"
+            # 返回当前 PowerShell 进程对象（有效 Process、PID>0），不启动真实子进程，
+            # 避免 PowerShell 5.1 在 -Command 模式下 Start-Process 与函数片段的引擎缺陷。
+            cleanup_starter = (
+                self._cleanup_starter_recording_body()
+                + "    return (Get-Process -Id $PID)\n"
+                + "}\n"
+            )
+            code, stdout, stderr, log_text, state_text, elapsed = self._run_helper_flow(
+                root, cleanup_starter, argv_file,
+            )
+            self.assertEqual(
+                0, code, msg="powershell failed:\n{0}\n{1}".format(stdout, stderr),
+            )
+            parser = configparser.ConfigParser()
+            parser.read_string(state_text)
+            self.assertEqual("verified", parser.get("State", "state"))
+            self.assertIn("cleanup process started", log_text)
+            self.assertNotIn("rollback", log_text)
+            self.assertLess(elapsed, 20, msg="Helper 不应等待 cleanup 进程退出")
+
+            loaded = json.loads(argv_file.read_text(encoding="utf-8-sig"))
+            self.assertEqual(
+                ["--self-update-cleanup", "--self-update-cleanup-parent-pid", loaded[2]],
+                loaded,
+            )
+
+            # 启动器与 exit 分支不得包含等待或退出码读取调用
+            lifecycle = ps1_fragments.generate_helper_lifecycle_functions_ps1()
+            starter_block = lifecycle.split("$script:CleanupStarter = {", 1)[1].split(
+                "function Start-CleanupApp", 1,
+            )[0]
+            cleanup_fn = lifecycle.split("function Start-CleanupApp", 1)[1]
+            self.assertNotIn("WaitForExit", starter_block)
+            self.assertNotIn("ExitCode", starter_block)
+            self.assertNotIn("WaitForExit", cleanup_fn)
+            self.assertNotIn("ExitCode", cleanup_fn)
+            main_flow = ps1_fragments.generate_helper_main_flow_ps1()
+            exit_branch = main_flow[main_flow.index("Start-CleanupApp"):]
+            self.assertNotIn("WaitForExit", exit_branch)
+            self.assertNotIn("ExitCode", exit_branch)
 
 
 if __name__ == "__main__":
