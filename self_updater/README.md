@@ -432,7 +432,7 @@ Helper.ps1 和 Update.ps1 都通过 `Get-SHA256($filePath)` 计算文件哈希�
 
 正常情况下，更新成功后的下一次正常启动会按 `update_state.ini` 记录的绝对路径清理 `runtime_dir` 中的运行时文件；`update.log` 会保留，最后删除 `update_state.ini`。
 
-`update_state.ini` 额外包含两个节：
+`update_state.ini` 额外包含以下配置项：
 
 - `[Protocol] schema_version=2`：更新协议版本。Helper 据此判定新版程序的启动参数解析方式；回滚重试时，仅当协议版本一致才会沿用上次写入的启动参数快照。
 - `[LaunchArgs] post_update_action`：本次更新后的启动动作，取值 `start` 或 `exit`，对应实例配置或沿用快照。

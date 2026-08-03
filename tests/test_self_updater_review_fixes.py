@@ -1314,6 +1314,27 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
         self.assertIn("不进入正常业务主循环", content)
         self.assertIn("不触发更新重试", content)
 
+        # 要求 3：启动入口按固定顺序（verify → retry → failed → cleanup → update）
+        entry_line = next(
+            line for line in content.splitlines()
+            if "启动入口按固定顺序检查" in line
+        )
+        verify_pos = entry_line.index("`--self-update-verify`")
+        retry_pos = entry_line.index("`--retry-update`")
+        failed_pos = entry_line.index("`--update-failed`")
+        cleanup_pos = entry_line.index("`--self-update-cleanup`")
+        update_pos = entry_line.index("`--update`")
+        self.assertLess(verify_pos, retry_pos)
+        self.assertLess(retry_pos, failed_pos)
+        self.assertLess(failed_pos, cleanup_pos)
+        self.assertLess(cleanup_pos, update_pos)
+
+        # 要求 4：post_update_action="exit" 流程说明
+        self.assertIn('post_update_action="exit"', content)
+
+        # 要求 6：透传只覆盖 argv，不覆盖 cwd 与 env
+        self.assertIn("不覆盖 cwd 与 env", content)
+
     def test_download_and_verify_still_checks_sha256_after_download(self):
         """下载成功后仍应由现有流程执行 SHA256 校验。"""
         with tempfile.TemporaryDirectory() as temp_dir:
