@@ -16,6 +16,7 @@
 """
 
 import configparser
+import ctypes
 import json
 import logging
 import os
@@ -1122,29 +1123,36 @@ class SelfUpdater:
             cls,
             cache_dir: Path,
             logger: logging.Logger,
-    ) -> None:
-        """删除缓存中的普通文件和目录，保留链接与 reparse point。"""
+    ) -> bool:
+        """删除缓存中的普通文件和目录，保留链接与 reparse point。
+
+        Returns:
+            全部清理成功返回 True；危险路径、枚举或删除失败返回 False
+        """
         if cls._is_unsafe_path(cache_dir):
             logger.warning(f"跳过不安全缓存目录: {cache_dir}")
-            return
+            return False
 
         try:
             children = list(cache_dir.iterdir())
         except OSError as error:
             logger.warning(f"枚举缓存目录失败，已跳过: {cache_dir}, {error}")
-            return
+            return False
 
+        all_succeeded = True
         for child_path in children:
             if cls._is_unsafe_path(child_path):
                 logger.warning(f"保留不安全缓存链接: {child_path}")
                 continue
             if child_path.is_dir():
-                cls._remove_marked_cache_contents(child_path, logger)
+                if not cls._remove_marked_cache_contents(child_path, logger):
+                    all_succeeded = False
                 continue
             try:
                 child_path.unlink()
             except OSError as error:
                 logger.warning(f"清理缓存文件失败，已跳过: {child_path}, {error}")
+                all_succeeded = False
 
         try:
             if not cls._is_unsafe_path(cache_dir):
@@ -1152,25 +1160,36 @@ class SelfUpdater:
                 logger.info("已清理自更新缓存目录")
         except OSError as error:
             logger.warning(f"删除缓存目录失败，已跳过: {cache_dir}, {error}")
+            all_succeeded = False
+        return all_succeeded
 
     @staticmethod
-    def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> None:
-        """删除指定目录树中的空目录，不跟随符号链接或 reparse point。"""
-        if not root_dir.exists() or SelfUpdater._is_unsafe_path(root_dir):
-            return
+    def _remove_empty_directories(root_dir: Path, logger: logging.Logger) -> bool:
+        """删除指定目录树中的空目录，不跟随符号链接或 reparse point。
+
+        Returns:
+            全部空目录删除成功返回 True；危险路径、枚举或删除失败返回 False
+        """
+        if not root_dir.exists():
+            return True
+        if SelfUpdater._is_unsafe_path(root_dir):
+            logger.warning(f"跳过不安全目录: {root_dir}")
+            return False
 
         try:
             children = list(root_dir.iterdir())
         except OSError as error:
             logger.warning(f"枚举目录失败，已跳过: {root_dir}, {error}")
-            return
+            return False
 
+        all_succeeded = True
         for child_path in children:
             if not child_path.is_dir():
                 continue
             if SelfUpdater._is_unsafe_path(child_path):
                 continue
-            SelfUpdater._remove_empty_directories(child_path, logger)
+            if not SelfUpdater._remove_empty_directories(child_path, logger):
+                all_succeeded = False
 
         try:
             if not SelfUpdater._is_unsafe_path(root_dir):
@@ -1178,15 +1197,25 @@ class SelfUpdater:
                 logger.debug(f"已删除空目录: {root_dir}")
         except OSError as error:
             logger.warning(f"删除空目录失败，已跳过: {root_dir}, {error}")
+            all_succeeded = False
+        return all_succeeded
 
-    def _cleanup_update_residue(self, logger: Optional[logging.Logger] = None) -> None:
-        """按受控运行时目录中的精确路径清理上次成功更新残留。"""
+    def cleanup_update_residue(
+            self,
+            logger: Optional[logging.Logger] = None,
+    ) -> bool:
+        """按受控运行时目录中的精确路径清理上次成功更新残留。
+
+        Returns:
+            全部残留清理成功返回 True；任一路径安全校验拒绝、删除失败
+            或空目录处理失败时返回 False，并保留 verified 状态供重试
+        """
         logger = logger or self.logger
         state = UpdateState.load()
         if not state:
-            return
+            return True
         if state.get("State", "state", fallback="") != "verified":
-            return
+            return True
 
         runtime_dir = Path(state["runtime_dir"]) if state["runtime_dir"] else None
         try:
@@ -1204,9 +1233,10 @@ class SelfUpdater:
             resolved_runtime_dir.relative_to(resolved_temp_folder)
         except (OSError, ValueError) as error:
             logger.warning(f"跳过不受控运行时目录的残留清理: {error}")
-            resolved_runtime_dir = None
+            return False
 
         logger.info("清理上次更新残留文件...")
+        all_succeeded = True
         cleanup_files = [
             Path(file_path)
             for file_path in (
@@ -1220,88 +1250,113 @@ class SelfUpdater:
         ]
 
         for file_path in cleanup_files:
+            if not os.path.lexists(file_path):
+                continue
             try:
-                if not resolved_runtime_dir:
-                    logger.warning(f"跳过运行时目录外的残留文件: {file_path}")
-                    continue
                 try:
                     self._validate_safe_path_ancestors(file_path, runtime_dir)
                 except OSError as error:
                     logger.warning(f"跳过链接或重解析残留文件: {file_path}, {error}")
+                    all_succeeded = False
                     continue
                 resolved_file_path = file_path.resolve()
                 try:
                     resolved_file_path.relative_to(resolved_runtime_dir)
                 except ValueError:
                     logger.warning(f"跳过运行时目录外的残留文件: {file_path}")
+                    all_succeeded = False
                     continue
                 if not resolved_file_path.exists():
                     continue
                 if self._is_unsafe_path(resolved_file_path):
                     logger.warning(f"跳过解析后为链接或重解析的残留文件: {file_path}")
+                    all_succeeded = False
                     continue
                 resolved_file_path.unlink()
                 logger.debug(f"已删除残留文件: {resolved_file_path}")
-            except OSError as e:
-                logger.warning(f"清理残留文件失败，已跳过: {file_path}, {e}")
+            except OSError as error:
+                logger.warning(f"清理残留文件失败，已跳过: {file_path}, {error}")
+                all_succeeded = False
 
         if resolved_runtime_dir and runtime_dir.exists():
-            SelfUpdater._remove_empty_directories(runtime_dir, logger)
+            if not SelfUpdater._remove_empty_directories(runtime_dir, logger):
+                all_succeeded = False
 
-        # 最后删除状态文件自身
+        if not all_succeeded:
+            return False
+
+        # 全部残留成功后才删除状态文件自身
         try:
             state.delete()
         except OSError as error:
             logger.warning(f"删除更新状态文件失败: {error}")
+            return False
+        return True
+
+    def _cleanup_update_residue(
+            self,
+            logger: Optional[logging.Logger] = None,
+    ) -> bool:
+        """兼容旧私有调用的包装，内部转发给公开的 cleanup_update_residue。"""
+        return self.cleanup_update_residue(logger)
 
     @staticmethod
-    def clean_update_cache(temp_folder: str, logger: logging.Logger) -> None:
+    def clean_update_cache(
+            temp_folder: str,
+            logger: Optional[logging.Logger] = None,
+    ) -> bool:
         """
         清理带有效标记的自更新缓存目录 UpdateCache
 
         Args:
             temp_folder: 临时文件夹路径
-            logger: 日志记录器
+            logger: 日志记录器，不传时使用模块默认日志记录器
+
+        Returns:
+            无需清理或全部清理成功返回 True；不安全路径、无效标记、
+            枚举或删除失败返回 False
         """
+        logger = logger or logging.getLogger("SelfUpdater")
         temp_path = Path(temp_folder)
         if not temp_path.exists():
-            return
+            return True
         if not temp_path.is_dir() or SelfUpdater._is_unsafe_path(temp_path):
             logger.warning(f"跳过不安全的临时目录: {temp_path}")
-            return
+            return False
 
         cache_dir = temp_path / "UpdateCache"
         if not cache_dir.exists():
-            return
+            return True
         if not cache_dir.is_dir() or SelfUpdater._is_unsafe_path(cache_dir):
             logger.warning(f"跳过不安全的缓存目录: {cache_dir}")
-            return
+            return False
 
         marker_path = cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE
         if SelfUpdater._is_unsafe_path(marker_path):
             logger.warning(f"跳过链接或重解析的缓存标记: {marker_path}")
-            return
+            return False
         try:
             marker_content = marker_path.read_text(encoding="ascii")
         except (OSError, UnicodeDecodeError):
             marker_content = ""
         if marker_content != SelfUpdater._UPDATE_CACHE_MARKER_CONTENT:
             logger.warning(f"缓存目录缺少有效标记，跳过清理: {cache_dir}")
-            return
+            return False
 
         installs_dir = cache_dir / "installs"
         if installs_dir.exists():
             if not installs_dir.is_dir() or SelfUpdater._is_unsafe_path(installs_dir):
                 logger.warning(f"跳过不安全的缓存安装目录: {installs_dir}")
-                return
-            SelfUpdater._remove_marked_cache_contents(installs_dir, logger)
+                return False
+            if not SelfUpdater._remove_marked_cache_contents(installs_dir, logger):
+                return False
 
         try:
             if not SelfUpdater._is_unsafe_path(marker_path):
                 marker_path.unlink()
         except OSError as error:
             logger.warning(f"删除缓存标记失败，已跳过: {marker_path}, {error}")
-            return
+            return False
 
         try:
             if not SelfUpdater._is_unsafe_path(cache_dir):
@@ -1309,6 +1364,110 @@ class SelfUpdater:
                 logger.info("已清理自更新缓存目录")
         except OSError as error:
             logger.warning(f"删除缓存目录失败，已保留根级未知内容: {cache_dir}, {error}")
+            return False
+        return True
+
+    def _get_kernel32(self) -> "ctypes.WinDLL":
+        """获取 kernel32 动态库并配置进程等待相关函数签名，便于测试注入。"""
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_bool,
+            ctypes.c_uint32,
+        ]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        return kernel32
+
+    def _wait_for_process_exit(
+            self,
+            helper_pid: int,
+            timeout_seconds: float,
+            logger: logging.Logger,
+    ) -> bool:
+        """等待 helper 进程退出（Windows 专用），返回是否已正常退出。
+
+        Args:
+            helper_pid: helper 进程 PID
+            timeout_seconds: 等待超时秒数
+            logger: 日志记录器
+        """
+        kernel32 = self._get_kernel32()
+        process_handle = kernel32.OpenProcess(
+            0x00100000,  # SYNCHRONIZE
+            False,
+            helper_pid,
+        )
+        if not process_handle:
+            error_code = ctypes.get_last_error()
+            logger.warning(f"打开 helper 进程失败 (pid={helper_pid}, error={error_code})")
+            return False
+        try:
+            wait_result = kernel32.WaitForSingleObject(
+                process_handle,
+                int(timeout_seconds * 1000),
+            )
+        except Exception as error:
+            logger.warning(f"等待 helper 进程退出异常 (pid={helper_pid}, {error})")
+            return False
+        finally:
+            if process_handle:
+                kernel32.CloseHandle(process_handle)
+        if wait_result == 0:  # WAIT_OBJECT_0
+            return True
+        if wait_result == 0xFFFFFFFF:  # WAIT_FAILED
+            error_code = ctypes.get_last_error()
+            logger.warning(f"等待 helper 进程失败 (pid={helper_pid}, error={error_code})")
+            return False
+        logger.warning(f"等待 helper 进程退出超时 (pid={helper_pid})")
+        return False
+
+    def self_update_cleanup(
+            self,
+            helper_pid: Optional[int] = None,
+            logger: Optional[logging.Logger] = None,
+    ) -> int:
+        """等待 helper 进程退出并清理更新残留与下载缓存。
+
+        Args:
+            helper_pid: helper 进程 PID；None 或 0 表示无需等待
+            logger: 日志记录器
+
+        Returns:
+            全部清理成功返回 0；任一失败返回 1（仅用于诊断，不触发更新重试）
+
+        Raises:
+            ValueError: helper_pid 为负数时
+        """
+        logger = logger or self.logger
+        helper_pid = helper_pid or 0
+        if helper_pid < 0:
+            raise ValueError(f"非法的 helper 进程 PID: {helper_pid}")
+
+        all_succeeded = True
+        should_cleanup_residue = True
+        if helper_pid > 0:
+            if not self._wait_for_process_exit(helper_pid, 60.0, logger):
+                logger.warning("等待 helper 进程退出失败，跳过残留清理")
+                should_cleanup_residue = False
+                all_succeeded = False
+        if should_cleanup_residue:
+            try:
+                if not self.cleanup_update_residue(logger):
+                    all_succeeded = False
+            except Exception as error:
+                logger.warning(f"清理更新残留异常: {error}")
+                all_succeeded = False
+        try:
+            if not self.clean_update_cache(self.temp_folder, logger):
+                all_succeeded = False
+        except Exception as error:
+            logger.warning(f"清理更新缓存异常: {error}")
+            all_succeeded = False
+        return 0 if all_succeeded else 1
 
     @staticmethod
     def rollback(logger: Optional[logging.Logger] = None) -> bool:

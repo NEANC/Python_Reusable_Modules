@@ -596,7 +596,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
             with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             for runtime_file in runtime_files:
                 self.assertFalse(runtime_file.exists(), runtime_file)
@@ -606,7 +606,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
             self.assertTrue(old_residue.exists())
             self.assertTrue(unrecorded_update_ps1.exists())
             self.assertTrue(unrecorded_backup_exe.exists())
-            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+            self.assertTrue((program_dir / UpdateState.STATE_FILE_NAME).exists())
 
     def test_cleanup_update_residue_skips_files_outside_runtime_dir(self):
         """清理更新残留时不应删除 runtime_dir 外部的记录路径。"""
@@ -629,11 +629,12 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
             with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                result = updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
+            self.assertFalse(result)
             self.assertTrue(important_file.exists())
             self.assertFalse(runtime_file.exists())
-            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+            self.assertTrue((program_dir / UpdateState.STATE_FILE_NAME).exists())
 
     def test_cleanup_update_residue_removes_empty_runtime_dir(self):
         """清理更新残留后应删除已清空的运行时目录。"""
@@ -664,8 +665,9 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
             with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                result = updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
+            self.assertTrue(result)
             for runtime_file in runtime_files:
                 self.assertFalse(runtime_file.exists(), runtime_file)
             self.assertFalse(runtime_dir.exists())
@@ -702,8 +704,9 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
 
             with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(base_dir=program_dir)
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                result = updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
+            self.assertTrue(result)
             self.assertFalse(nested_dir.exists())
             self.assertFalse((runtime_dir / "nested").exists())
             self.assertFalse(runtime_dir.exists())
@@ -730,7 +733,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
                     base_dir=program_dir,
                 )
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             self.assertTrue(external_dir.exists())
             self.assertTrue(external_file.exists())
@@ -759,7 +762,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
                     base_dir=program_dir,
                 )
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             self.assertTrue(residue_file.exists())
             self.assertTrue(temp_folder.exists())
@@ -787,7 +790,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
                     base_dir=program_dir,
                 )
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             self.assertTrue(external_dir.exists())
             self.assertTrue(external_file.exists())
@@ -2008,11 +2011,11 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                 state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
                     base_dir=program_dir,
                 )
-                updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             self.assertTrue(target_file.exists())
             self.assertTrue(link_file.exists())
-            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+            self.assertTrue((program_dir / UpdateState.STATE_FILE_NAME).exists())
 
     def test_cleanup_update_residue_skips_runtime_dir_with_reparse_ancestor_via_mock(self):
         """运行时目录祖先为重解析点时不得删除残留文件。"""
@@ -2046,7 +2049,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     base_dir=program_dir,
                 )
                 with self.assertLogs("SelfUpdaterTest", level="WARNING"):
-                    updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                    updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             self.assertTrue(runtime_file.exists())
 
@@ -2083,7 +2086,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     base_dir=program_dir,
                 )
                 with self.assertLogs("SelfUpdaterTest", level="WARNING"):
-                    updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                    updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             self.assertTrue(residue_file.exists())
 
@@ -2124,7 +2127,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     base_dir=program_dir,
                 )
                 with self.assertLogs("SelfUpdaterTest", level="WARNING"):
-                    updater._cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
+                    updater.cleanup_update_residue(logging.getLogger("SelfUpdaterTest"))
 
             self.assertTrue(junction.exists())
             self.assertTrue(residue_file.exists())
@@ -2518,7 +2521,7 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                         side_effect=OSError("access denied"),
                 ):
                     with self.assertLogs("SelfUpdaterTest", level="WARNING") as captured:
-                        updater._cleanup_update_residue(
+                        updater.cleanup_update_residue(
                             logging.getLogger("SelfUpdaterTest"),
                         )
 
@@ -2553,6 +2556,250 @@ class SelfUpdaterReviewFixesTest(unittest.TestCase):
                     )
 
             self.assertIn("删除空目录失败", "\n".join(captured.output))
+
+    def test_cleanup_update_residue_preserves_state_after_nested_delete_failure(self):
+        """残留文件删除失败时应返回 False 并保留状态文件供重试。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            residue_file = paths["new_file"]
+            residue_file.write_text("runtime", encoding="utf-8")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(residue_file)
+            state["backup_file"] = str(paths["backup_file"])
+            state["helper_ps1"] = str(paths["helper_ps1"])
+            state["update_ps1"] = str(paths["update_ps1"])
+            state["lock_file"] = str(paths["lock_file"])
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                with patch.object(Path, "unlink", autospec=True, side_effect=OSError("access denied")):
+                    result = updater.cleanup_update_residue(
+                        logging.getLogger("SelfUpdaterTest"),
+                    )
+
+            self.assertFalse(result)
+            self.assertTrue(residue_file.exists())
+            self.assertTrue((program_dir / UpdateState.STATE_FILE_NAME).exists())
+
+    def test_cleanup_retry_does_not_trigger_update_retry(self):
+        """清理失败保留 verified 状态，重试清理不触发更新检查或回滚。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            updater, current_exe, paths = self._make_runtime_paths(root)
+            program_dir = paths["program_dir"]
+            runtime_dir = paths["runtime_dir"]
+            residue_file = paths["new_file"]
+            residue_file.write_text("runtime", encoding="utf-8")
+            state = UpdateState(base_dir=program_dir)
+            state["state"] = "verified"
+            state["target"] = str(current_exe)
+            state["runtime_dir"] = str(runtime_dir)
+            state["new_file"] = str(residue_file)
+            state["backup_file"] = str(paths["backup_file"])
+            state["helper_ps1"] = str(paths["helper_ps1"])
+            state["update_ps1"] = str(paths["update_ps1"])
+            state["lock_file"] = str(paths["lock_file"])
+            state["retry_count"] = "2"
+            state.save()
+
+            with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                    base_dir=program_dir,
+                )
+                with patch.object(Path, "unlink", autospec=True, side_effect=OSError("access denied")):
+                    first_result = updater.cleanup_update_residue(
+                        logging.getLogger("SelfUpdaterTest"),
+                    )
+
+            self.assertFalse(first_result)
+            loaded = UpdateState.load(base_dir=program_dir)
+            self.assertIsNotNone(loaded)
+            self.assertEqual("verified", loaded["state"])
+            self.assertEqual("2", loaded.get("Retry", "retry_count", fallback="0"))
+
+            with patch.object(updater, "check_self_update") as mock_check, \
+                    patch.object(SelfUpdater, "rollback") as mock_rollback:
+                with patch("self_updater.self_updater.UpdateState", wraps=UpdateState) as state_cls:
+                    state_cls.load.side_effect = lambda *args, **kwargs: UpdateState.load(
+                        base_dir=program_dir,
+                    )
+                    second_result = updater.cleanup_update_residue(
+                        logging.getLogger("SelfUpdaterTest"),
+                    )
+
+            self.assertTrue(second_result)
+            self.assertFalse((program_dir / UpdateState.STATE_FILE_NAME).exists())
+            mock_check.assert_not_called()
+            mock_rollback.assert_not_called()
+
+    def test_clean_update_cache_preserves_marker_after_nested_enumeration_failure(self):
+        """clean_update_cache 深层枚举失败时应返回 False 且保留 marker。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            missing_dir = root / "missing"
+            self.assertTrue(SelfUpdater.clean_update_cache(str(missing_dir), None))
+
+            cache_dir = root / "UpdateCache"
+            installs_dir = cache_dir / "installs" / "v1.2.0"
+            installs_dir.mkdir(parents=True)
+            marker_path = cache_dir / SelfUpdater._UPDATE_CACHE_MARKER_FILE
+            marker_path.write_text(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            (installs_dir / "App.exe").write_bytes(b"cache")
+            self.assertTrue(SelfUpdater.clean_update_cache(str(root), None))
+            self.assertFalse(cache_dir.exists())
+
+            cache_dir.mkdir()
+            marker_path.write_text("invalid", encoding="ascii")
+            (cache_dir / "App.exe").write_bytes(b"cache")
+            self.assertFalse(SelfUpdater.clean_update_cache(str(root), None))
+            self.assertTrue(cache_dir.exists())
+
+            file_cache = root / "UpdateCacheFile"
+            file_cache.write_bytes(b"not-a-directory")
+            self.assertFalse(SelfUpdater.clean_update_cache(str(file_cache), None))
+            self.assertTrue(file_cache.exists())
+
+            installs_dir = cache_dir / "installs"
+            installs_dir.mkdir(exist_ok=True)
+            (installs_dir / "App.exe").write_bytes(b"cache")
+            marker_path.write_text(
+                SelfUpdater._UPDATE_CACHE_MARKER_CONTENT,
+                encoding="ascii",
+            )
+            with patch.object(Path, "iterdir", side_effect=OSError("access denied")):
+                enum_result = SelfUpdater.clean_update_cache(str(root), None)
+            self.assertFalse(enum_result)
+            self.assertTrue(marker_path.exists())
+
+            with patch.object(Path, "unlink", autospec=True, side_effect=OSError("access denied")):
+                delete_result = SelfUpdater.clean_update_cache(str(root), None)
+            self.assertFalse(delete_result)
+            self.assertTrue(marker_path.exists())
+
+    def test_self_update_cleanup_waits_for_helper_before_residue(self):
+        """self_update_cleanup 应先等待 helper 退出再清理残留。"""
+        updater = self.make_updater()
+        with patch.object(SelfUpdater, "_wait_for_process_exit", return_value=True) as wait_for_exit, \
+                patch.object(SelfUpdater, "clean_update_cache", return_value=True) as cache, \
+                patch.object(SelfUpdater, "cleanup_update_residue", return_value=True) as residue:
+            result = updater.self_update_cleanup(helper_pid=1234)
+
+        self.assertEqual(0, result)
+        wait_for_exit.assert_called_once_with(1234, 60.0, updater.logger)
+        residue.assert_called_once()
+        cache.assert_called_once()
+
+    def test_self_update_cleanup_skips_residue_when_wait_fails(self):
+        """等待 helper 失败时应跳过残留清理但仍执行缓存清理。"""
+        updater = self.make_updater()
+        with patch.object(SelfUpdater, "_wait_for_process_exit", return_value=False), \
+                patch.object(SelfUpdater, "clean_update_cache", return_value=True) as cache, \
+                patch.object(SelfUpdater, "cleanup_update_residue") as residue:
+            result = updater.self_update_cleanup(helper_pid=1234)
+
+        self.assertEqual(1, result)
+        residue.assert_not_called()
+        cache.assert_called_once()
+
+    def test_self_update_cleanup_without_helper_pid(self):
+        """未提供 helper PID 时应不等待并执行全部清理。"""
+        updater = self.make_updater()
+        with patch.object(SelfUpdater, "_wait_for_process_exit") as wait_for_exit, \
+                patch.object(SelfUpdater, "clean_update_cache", return_value=True) as cache, \
+                patch.object(SelfUpdater, "cleanup_update_residue", return_value=True) as residue:
+            result = updater.self_update_cleanup()
+
+        self.assertEqual(0, result)
+        wait_for_exit.assert_not_called()
+        residue.assert_called_once()
+        cache.assert_called_once()
+
+    def test_self_update_cleanup_rejects_negative_helper_pid(self):
+        """负数 helper PID 应被拒绝并抛出 ValueError。"""
+        updater = self.make_updater()
+        with self.assertRaises(ValueError):
+            updater.self_update_cleanup(helper_pid=-1)
+
+    def test_self_update_cleanup_continues_after_cleanup_exception(self):
+        """任一清理抛异常时应继续另一项并返回 1。"""
+        updater = self.make_updater()
+        with patch.object(SelfUpdater, "_wait_for_process_exit", return_value=True), \
+                patch.object(SelfUpdater, "clean_update_cache", return_value=True) as cache, \
+                patch.object(
+                    SelfUpdater,
+                    "cleanup_update_residue",
+                    side_effect=RuntimeError("boom"),
+                ):
+            result = updater.self_update_cleanup(helper_pid=1234)
+
+        self.assertEqual(1, result)
+        cache.assert_called_once()
+
+    def test_wait_for_process_exit_uses_synchronize_handle(self):
+        """等待 helper 退出应使用 SYNCHRONIZE 句柄、毫秒超时并关闭句柄。"""
+        updater = self.make_updater()
+        mock_kernel32 = Mock()
+        handle = 4321
+        with patch.object(SelfUpdater, "_get_kernel32", return_value=mock_kernel32):
+            mock_kernel32.OpenProcess.return_value = handle
+            mock_kernel32.WaitForSingleObject.return_value = 0
+            self.assertTrue(
+                updater._wait_for_process_exit(4567, 60.0, updater.logger),
+            )
+            mock_kernel32.OpenProcess.assert_called_once_with(0x00100000, False, 4567)
+            mock_kernel32.WaitForSingleObject.assert_called_once_with(handle, 60000)
+            mock_kernel32.CloseHandle.assert_called_once_with(handle)
+
+            mock_kernel32.OpenProcess.reset_mock()
+            mock_kernel32.WaitForSingleObject.reset_mock()
+            mock_kernel32.CloseHandle.reset_mock()
+            mock_kernel32.OpenProcess.return_value = handle
+            mock_kernel32.WaitForSingleObject.return_value = 258
+            self.assertFalse(
+                updater._wait_for_process_exit(4567, 60.0, updater.logger),
+            )
+            mock_kernel32.CloseHandle.assert_called_once_with(handle)
+
+            mock_kernel32.OpenProcess.reset_mock()
+            mock_kernel32.WaitForSingleObject.reset_mock()
+            mock_kernel32.CloseHandle.reset_mock()
+            mock_kernel32.OpenProcess.return_value = handle
+            mock_kernel32.WaitForSingleObject.return_value = 0xFFFFFFFF
+            self.assertFalse(
+                updater._wait_for_process_exit(4567, 60.0, updater.logger),
+            )
+            mock_kernel32.CloseHandle.assert_called_once_with(handle)
+
+            mock_kernel32.OpenProcess.reset_mock()
+            mock_kernel32.WaitForSingleObject.reset_mock()
+            mock_kernel32.CloseHandle.reset_mock()
+            mock_kernel32.OpenProcess.return_value = None
+            self.assertFalse(
+                updater._wait_for_process_exit(4567, 60.0, updater.logger),
+            )
+            mock_kernel32.CloseHandle.assert_not_called()
+
+            mock_kernel32.OpenProcess.reset_mock()
+            mock_kernel32.WaitForSingleObject.reset_mock()
+            mock_kernel32.CloseHandle.reset_mock()
+            mock_kernel32.OpenProcess.return_value = handle
+            mock_kernel32.WaitForSingleObject.side_effect = OSError("kernel32 error")
+            self.assertFalse(
+                updater._wait_for_process_exit(4567, 60.0, updater.logger),
+            )
+            mock_kernel32.CloseHandle.assert_called_once_with(handle)
 
 
 class PowerShell51IntegrationTest(unittest.TestCase):
