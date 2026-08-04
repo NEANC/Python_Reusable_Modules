@@ -615,6 +615,7 @@ def test_readme_documents_copy_import_banner_spinner_and_example():
     assert 'banner_art' in content
     assert 'spinner_phase' in content
     assert 'write_done' in content
+    assert 'sp.fail("程序初始化失败")' in content
     assert 'notify_fail' in content
     assert 'example.py' in content
 
