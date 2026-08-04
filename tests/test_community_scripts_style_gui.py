@@ -270,7 +270,7 @@ def test_banner_divider_uses_terminal_width_for_chinese_title(capsys):
 def test_banner_divider_uses_terminal_width_for_mixed_title(capsys):
     """中英文混合标题应按终端可见宽度计算分隔线。"""
     banner = _load_module_from_path('style_gui_banner_mixed_divider', BANNER_FILE)
-    app_name = 'Style界面工具'
+    app_name = 'Style界面工具Terminal宽度动态验证'
 
     banner.print_info(
         app_name=app_name,
@@ -283,7 +283,8 @@ def test_banner_divider_uses_terminal_width_for_mixed_title(capsys):
     output = capsys.readouterr().out
     divider_lines = [line for line in output.splitlines() if '─' in line]
     assert len(divider_lines) == 1
-    assert divider_lines[0].count('─') >= 15
+    assert banner._terminal_width(app_name) > 32
+    assert divider_lines[0].count('─') == banner._terminal_width(app_name)
 
 
 def test_banner_terminal_width_handles_basic_grapheme_and_emoji_sequences():
