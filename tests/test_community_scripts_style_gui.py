@@ -134,6 +134,44 @@ def test_banner_divider_uses_dynamic_minimum_width(capsys):
     assert divider_width >= len('Version: v9.9.9     License: Apache-2.0')
 
 
+def test_banner_divider_uses_terminal_width_for_chinese_title(capsys):
+    """中文标题应按终端可见宽度计算分隔线。"""
+    banner = _load_module_from_path('style_gui_banner_chinese_divider', BANNER_FILE)
+    app_name = '汉' * 20
+
+    banner.print_info(
+        app_name=app_name,
+        subtitle='',
+        version='',
+        license_name='',
+        banner_art='',
+    )
+
+    output = capsys.readouterr().out
+    divider_lines = [line for line in output.splitlines() if '─' in line]
+    assert len(divider_lines) == 1
+    assert divider_lines[0].count('─') >= 40
+
+
+def test_banner_divider_uses_terminal_width_for_mixed_title(capsys):
+    """中英文混合标题应按终端可见宽度计算分隔线。"""
+    banner = _load_module_from_path('style_gui_banner_mixed_divider', BANNER_FILE)
+    app_name = 'Style界面工具'
+
+    banner.print_info(
+        app_name=app_name,
+        subtitle='',
+        version='',
+        license_name='',
+        banner_art='',
+    )
+
+    output = capsys.readouterr().out
+    divider_lines = [line for line in output.splitlines() if '─' in line]
+    assert len(divider_lines) == 1
+    assert divider_lines[0].count('─') >= 15
+
+
 def test_spinner_non_tty_system_exit_zero_logs_success(caplog):
     """非 TTY 下 SystemExit(0) 应记录成功退出并继续抛出。"""
     spinner = _load_module_from_path('style_gui_spinner_exit_zero', SPINNER_FILE)

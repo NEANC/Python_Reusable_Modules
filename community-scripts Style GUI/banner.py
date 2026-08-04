@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import unicodedata
+
 import colorama
 
 VERSION = "v0.0.0"
@@ -22,8 +24,29 @@ def _build_info_line(version, license_name):
     return "     ".join(parts)
 
 
+def _terminal_width(text):
+    """计算文本在终端中的基础单元格宽度。"""
+    width = 0
+    for ch in text or '':
+        if unicodedata.combining(ch):
+            continue
+        if unicodedata.east_asian_width(ch) in ('F', 'W'):
+            width += 2
+            continue
+        if unicodedata.category(ch) == 'So':
+            width += 2
+            continue
+        width += 1
+    return width
+
+
 def _divider_width(app_name, subtitle, info_line):
-    return max(_MIN_DIVIDER_WIDTH, len(app_name or ''), len(subtitle or ''), len(info_line or ''))
+    return max(
+        _MIN_DIVIDER_WIDTH,
+        _terminal_width(app_name),
+        _terminal_width(subtitle),
+        _terminal_width(info_line),
+    )
 
 
 def print_info(
