@@ -286,6 +286,35 @@ def test_banner_divider_uses_terminal_width_for_mixed_title(capsys):
     assert divider_lines[0].count('─') >= 15
 
 
+def test_banner_terminal_width_handles_basic_grapheme_and_emoji_sequences():
+    """终端宽度应区分普通符号、VS16 与 ZWJ emoji 序列。"""
+    banner = _load_module_from_path('style_gui_banner_unicode_width', BANNER_FILE)
+
+    assert banner._terminal_width('©') == 1
+    assert banner._terminal_width('♥') == 1
+    assert banner._terminal_width('✔️') == 2
+    assert banner._terminal_width('👩‍💻') == 2
+
+
+def test_banner_divider_matches_unicode_terminal_width_exactly(capsys):
+    """超过最小宽度时，分隔线应精确匹配 Unicode 可见宽度。"""
+    banner = _load_module_from_path('style_gui_banner_unicode_divider', BANNER_FILE)
+    app_name = '©' * 31 + '✔️' + '👩‍💻'
+
+    banner.print_info(
+        app_name=app_name,
+        subtitle='',
+        version='',
+        license_name='',
+        banner_art='',
+    )
+
+    output = capsys.readouterr().out
+    divider_lines = [line for line in output.splitlines() if '─' in line]
+    assert len(divider_lines) == 1
+    assert divider_lines[0].count('─') == 35
+
+
 def test_spinner_non_tty_system_exit_zero_logs_success(caplog):
     """非 TTY 下 SystemExit(0) 应记录成功退出并继续抛出。"""
     spinner = _load_module_from_path('style_gui_spinner_exit_zero', SPINNER_FILE)

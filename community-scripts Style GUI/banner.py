@@ -13,6 +13,8 @@ DEFAULT_BANNER_ART = r"""  ____  _         _        ____ _   _ ___
  |____/ \__|\__, |_|\___| \____|\___/|___|
              |___/"""
 _MIN_DIVIDER_WIDTH = 32
+_VARIATION_SELECTORS = ('\ufe0e', '\ufe0f')
+_ZERO_WIDTH_JOINER = '\u200d'
 
 
 def _build_info_line(version, license_name):
@@ -27,16 +29,39 @@ def _build_info_line(version, license_name):
 def _terminal_width(text):
     """计算文本在终端中的基础单元格宽度。"""
     width = 0
-    for ch in text or '':
-        if unicodedata.combining(ch):
+    index = 0
+    text = text or ''
+    while index < len(text):
+        ch = text[index]
+        if unicodedata.category(ch).startswith('M') or ch in _VARIATION_SELECTORS:
+            index += 1
             continue
-        if unicodedata.east_asian_width(ch) in ('F', 'W'):
-            width += 2
+        if ch == _ZERO_WIDTH_JOINER:
+            index += 1
             continue
-        if unicodedata.category(ch) == 'So':
-            width += 2
-            continue
-        width += 1
+
+        sequence_width = 2 if unicodedata.east_asian_width(ch) in ('F', 'W') else 1
+        index += 1
+        has_emoji_presentation = False
+        has_joiner = False
+
+        while index < len(text):
+            ch = text[index]
+            if ch in _VARIATION_SELECTORS:
+                has_emoji_presentation = has_emoji_presentation or ch == '\ufe0f'
+                index += 1
+                continue
+            if unicodedata.category(ch).startswith('M') or '\U0001f3fb' <= ch <= '\U0001f3ff':
+                index += 1
+                continue
+            if ch != _ZERO_WIDTH_JOINER:
+                break
+            has_joiner = True
+            index += 1
+            if index < len(text):
+                index += 1
+
+        width += 2 if has_emoji_presentation or has_joiner else sequence_width
     return width
 
 
