@@ -193,6 +193,24 @@ def test_spinner_non_tty_ignores_calls_after_done(caplog):
     assert '不应' not in caplog.text
 
 
+def test_spinner_non_tty_ignores_calls_after_fail(caplog):
+    """非 TTY 下 fail 后应忽略句柄的后续调用。"""
+    spinner = _load_module_from_path('style_gui_spinner_fail_closed', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    with spinner.spinner_phase('运行中...') as handle:
+        handle.fail('失败')
+        handle.text('不应更新')
+        handle.write('不应写入')
+        handle.write_done('不应写入成功')
+        handle.write_fail('不应写入失败')
+        handle.done('不应再次结束')
+        handle.fail('不应再次失败')
+
+    assert '失败' in caplog.text
+    assert '不应' not in caplog.text
+
+
 def test_spinner_non_tty_does_not_finish_again_after_exception(caplog):
     """非 TTY 下句柄结束后抛出异常不应重复收尾。"""
     spinner = _load_module_from_path('style_gui_spinner_closed_exception', SPINNER_FILE)
