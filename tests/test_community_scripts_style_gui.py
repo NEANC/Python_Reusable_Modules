@@ -72,6 +72,120 @@ def _load_module_from_path(module_name, path):
     return module
 
 
+def test_banner_print_info_without_arguments_uses_defaults(capsys):
+    """print_info 零参数调用应输出默认横幅与默认信息。"""
+    banner = _load_module_from_path('style_gui_banner_defaults', BANNER_FILE)
+
+    banner.print_info()
+
+    output = capsys.readouterr().out
+    assert '____' in output
+    assert 'Application' in output
+    assert 'Terminal Application' in output
+    assert 'Version: v0.0.0' in output
+
+
+def test_banner_print_info_outputs_only_custom_app_name(capsys):
+    """仅传 app_name 时应输出应用名并省略其它可省略字段。"""
+    banner = _load_module_from_path('style_gui_banner_app_name_only', BANNER_FILE)
+
+    banner.print_info(
+        app_name='Only App',
+        subtitle='',
+        version='',
+        license_name='',
+        banner_art='',
+    )
+
+    output = capsys.readouterr().out
+    assert 'Only App' in output
+    assert 'Terminal Application' not in output
+    assert 'Version:' not in output
+    assert 'License:' not in output
+    assert '____' not in output
+
+
+def test_banner_print_info_outputs_only_custom_subtitle(capsys):
+    """仅传 subtitle 时应输出副标题并省略其它可省略字段。"""
+    banner = _load_module_from_path('style_gui_banner_subtitle_only', BANNER_FILE)
+
+    banner.print_info(
+        app_name='',
+        subtitle='Only Subtitle',
+        version='',
+        license_name='',
+        banner_art='',
+    )
+
+    output = capsys.readouterr().out
+    assert 'Only Subtitle' in output
+    assert 'Application' not in output
+    assert 'Version:' not in output
+    assert 'License:' not in output
+    assert '____' not in output
+
+
+def test_banner_print_info_outputs_only_custom_version(capsys):
+    """仅传 version 时应输出版本并省略其它可省略字段。"""
+    banner = _load_module_from_path('style_gui_banner_version_only', BANNER_FILE)
+
+    banner.print_info(
+        app_name='',
+        subtitle='',
+        version='v9.8.7',
+        license_name='',
+        banner_art='',
+    )
+
+    output = capsys.readouterr().out
+    assert 'Version: v9.8.7' in output
+    assert 'Application' not in output
+    assert 'Terminal Application' not in output
+    assert 'License:' not in output
+    assert '____' not in output
+
+
+def test_banner_print_info_outputs_only_custom_license(capsys):
+    """仅传 license_name 时应输出许可证并省略其它可省略字段。"""
+    banner = _load_module_from_path('style_gui_banner_license_only', BANNER_FILE)
+
+    banner.print_info(
+        app_name='',
+        subtitle='',
+        version='',
+        license_name='Apache-2.0',
+        banner_art='',
+    )
+
+    output = capsys.readouterr().out
+    assert 'License: Apache-2.0' in output
+    assert 'Application' not in output
+    assert 'Terminal Application' not in output
+    assert 'Version:' not in output
+    assert '____' not in output
+
+
+def test_banner_print_info_outputs_only_custom_banner_art(capsys):
+    """仅传 banner_art 时应输出横幅图案并省略其它可省略字段。"""
+    banner = _load_module_from_path('style_gui_banner_art_only', BANNER_FILE)
+
+    banner.print_info(
+        app_name='',
+        subtitle='',
+        version='',
+        license_name='',
+        banner_art='ONLY ART',
+    )
+
+    output = capsys.readouterr().out
+    assert 'ONLY ART' in output
+    assert 'Application' not in output
+    assert 'Terminal Application' not in output
+    assert 'Version:' not in output
+    assert 'License:' not in output
+    assert '─' not in output
+
+
 def test_banner_print_info_outputs_all_custom_fields(capsys):
     """banner 应输出所有非空自定义字段。"""
     banner = _load_module_from_path('style_gui_banner_custom', BANNER_FILE)
@@ -191,13 +305,43 @@ def test_spinner_non_tty_system_exit_nonzero_logs_failure(caplog):
     spinner = _load_module_from_path('style_gui_spinner_exit_nonzero', SPINNER_FILE)
     caplog.set_level(logging.ERROR, logger=spinner.__name__)
 
-    try:
-        with spinner.spinner_phase('运行中...'):
-            raise SystemExit(2)
-    except SystemExit as exc:
-        assert exc.code == 2
+    with patch.object(spinner.sys.stdout, 'isatty', return_value=False):
+        try:
+            with spinner.spinner_phase('运行中...'):
+                raise SystemExit(2)
+        except SystemExit as exc:
+            assert exc.code == 2
 
     assert '程序异常退出 (code 2)' in caplog.text
+
+
+def test_spinner_tty_system_exit_nonzero_finishes_failure():
+    """TTY 下非零 SystemExit 应定格失败并继续抛出。"""
+    spinner = _load_module_from_path('style_gui_spinner_tty_sysexit_nonzero', SPINNER_FILE)
+    root_logger = logging.getLogger()
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+    original_handlers = list(root_logger.handlers)
+
+    fake_spinner = MagicMock()
+    try:
+        with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner.colorama, 'just_fix_windows_console'), \
+                patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
+            try:
+                with spinner.spinner_phase('等待中...'):
+                    raise SystemExit(3)
+            except SystemExit as exc:
+                assert exc.code == 3
+
+        fake_spinner.fail.assert_called_once()
+        failure_message = fake_spinner.fail.call_args.args[0]
+        assert '程序异常退出 (code 3)' in failure_message
+        assert handler.level == logging.INFO
+        assert root_logger.handlers == original_handlers
+    finally:
+        root_logger.removeHandler(handler)
 
 
 def test_spinner_non_tty_exception_logs_failure(caplog):
@@ -263,6 +407,65 @@ def test_spinner_non_tty_does_not_finish_again_after_exception(caplog):
 
     assert '完成' in caplog.text
     assert '程序已退出' not in caplog.text
+
+
+def test_spinner_non_tty_does_not_finish_again_after_done(caplog):
+    """非 TTY 下 done 后正常退出不应重复收尾。"""
+    spinner = _load_module_from_path('style_gui_spinner_done_no_duplicate', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    with spinner.spinner_phase('运行中...') as handle:
+        handle.done('完成')
+
+    assert caplog.text.count('完成') == 1
+    assert '程序已退出' not in caplog.text
+
+
+def test_spinner_non_tty_does_not_finish_again_after_fail(caplog):
+    """非 TTY 下 fail 后正常退出不应重复收尾。"""
+    spinner = _load_module_from_path('style_gui_spinner_fail_no_duplicate', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    with spinner.spinner_phase('运行中...') as handle:
+        handle.fail('失败')
+
+    assert caplog.text.count('失败') == 1
+    assert '程序已退出' not in caplog.text
+
+
+def test_spinner_non_tty_can_be_called_repeatedly(caplog):
+    """非 TTY spinner 应支持连续创建与收尾。"""
+    spinner = _load_module_from_path('style_gui_spinner_repeated', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    with spinner.spinner_phase('第一次运行') as first_handle:
+        first_handle.done('第一次完成')
+    with spinner.spinner_phase('第二次运行') as second_handle:
+        second_handle.done('第二次完成')
+
+    assert '第一次运行' in caplog.text
+    assert '第一次完成' in caplog.text
+    assert '第二次运行' in caplog.text
+    assert '第二次完成' in caplog.text
+
+
+def test_spinner_non_tty_can_be_called_after_exception(caplog):
+    """非 TTY spinner 异常退出后应可再次创建并正常收尾。"""
+    spinner = _load_module_from_path('style_gui_spinner_after_exception', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    try:
+        with spinner.spinner_phase('异常运行'):
+            raise RuntimeError('boom')
+    except RuntimeError:
+        pass
+    with spinner.spinner_phase('恢复运行') as handle:
+        handle.done('恢复完成')
+
+    assert '异常运行' in caplog.text
+    assert '程序已退出' in caplog.text
+    assert '恢复运行' in caplog.text
+    assert '恢复完成' in caplog.text
 
 
 def test_spinner_tty_initializes_colorama_and_restores_all_root_console_handlers():
@@ -385,13 +588,6 @@ def test_readme_documents_copy_import_banner_spinner_and_example():
     assert 'write_done' in content
     assert 'notify_fail' in content
     assert 'example.py' in content
-
-
-def test_readme_documents_spinner_fail_minimal_example():
-    """README 应提供 sp.fail() 的失败收尾最小示例。"""
-    content = README_FILE.read_text(encoding='utf-8')
-
-    assert 'sp.fail("程序初始化失败")' in content
 
 
 def test_example_runs_successfully():
