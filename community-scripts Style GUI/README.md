@@ -64,6 +64,8 @@ print_info(
 
 ## Spinner 用法
 
+成功收尾示例：
+
 ```python
 from spinner import spinner_phase
 
@@ -71,6 +73,15 @@ with spinner_phase("程序正在初始化...") as sp:
     sp.text("正在加载配置...")
     sp.write_done("配置加载完成")
     sp.done("程序初始化完成")
+```
+
+失败收尾最小示例：
+
+```python
+from spinner import spinner_phase
+
+with spinner_phase("程序正在初始化...") as sp:
+    sp.fail("程序初始化失败")
 ```
 
 spinner 句柄方法：

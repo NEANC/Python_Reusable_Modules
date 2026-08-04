@@ -387,6 +387,13 @@ def test_readme_documents_copy_import_banner_spinner_and_example():
     assert 'example.py' in content
 
 
+def test_readme_documents_spinner_fail_minimal_example():
+    """README 应提供 sp.fail() 的失败收尾最小示例。"""
+    content = README_FILE.read_text(encoding='utf-8')
+
+    assert 'sp.fail("程序初始化失败")' in content
+
+
 def test_example_runs_successfully():
     """example.py 应可直接运行。"""
     result = subprocess.run(
