@@ -17,6 +17,15 @@ _VARIATION_SELECTORS = ('\ufe0e', '\ufe0f')
 _ZERO_WIDTH_JOINER = '\u200d'
 
 
+def _initialize_colorama():
+    """兼容初始化新旧版本的 Colorama。"""
+    initializer = getattr(colorama, 'just_fix_windows_console', None)
+    if initializer is not None:
+        initializer()
+        return
+    colorama.init()
+
+
 def _build_info_line(version, license_name):
     parts = []
     if version:
@@ -82,7 +91,7 @@ def print_info(
     banner_art=DEFAULT_BANNER_ART,
 ):
     """打印可配置启动横幅。"""
-    colorama.just_fix_windows_console()
+    _initialize_colorama()
     info_line = _build_info_line(version, license_name)
     width = _divider_width(app_name, subtitle, info_line)
 

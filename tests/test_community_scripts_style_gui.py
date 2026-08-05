@@ -85,6 +85,22 @@ def test_banner_print_info_without_arguments_uses_defaults(capsys):
     assert 'Version: v0.0.0' in output
 
 
+def test_banner_print_info_falls_back_to_colorama_init(capsys):
+    """旧版 Colorama 缺少新初始化 API 时，banner 应回退到 init。"""
+    banner = _load_module_from_path('style_gui_banner_old_colorama', BANNER_FILE)
+    modern_initializer = banner.colorama.just_fix_windows_console
+
+    try:
+        del banner.colorama.just_fix_windows_console
+        with patch.object(banner.colorama, 'init') as init_mock:
+            banner.print_info(banner_art='')
+    finally:
+        banner.colorama.just_fix_windows_console = modern_initializer
+
+    init_mock.assert_called_once_with()
+    assert 'Application' in capsys.readouterr().out
+
+
 def test_banner_print_info_outputs_only_custom_app_name(capsys):
     """仅传 app_name 时应输出应用名并省略其它可省略字段。"""
     banner = _load_module_from_path('style_gui_banner_app_name_only', BANNER_FILE)
@@ -530,6 +546,26 @@ def test_spinner_tty_initializes_colorama_and_restores_all_root_console_handlers
         root_logger.removeHandler(handler_b)
 
 
+def test_spinner_tty_falls_back_to_colorama_init():
+    """旧版 Colorama 缺少新初始化 API 时，TTY spinner 应回退到 init。"""
+    spinner = _load_module_from_path('style_gui_spinner_old_colorama', SPINNER_FILE)
+    modern_initializer = spinner.colorama.just_fix_windows_console
+    fake_spinner = MagicMock()
+
+    try:
+        del spinner.colorama.just_fix_windows_console
+        with patch.object(spinner.colorama, 'init') as init_mock, \
+                patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
+            with spinner.spinner_phase('等待中...') as handle:
+                handle.done('完成')
+    finally:
+        spinner.colorama.just_fix_windows_console = modern_initializer
+
+    init_mock.assert_called_once_with()
+    fake_spinner.start.assert_called_once_with()
+
+
 def test_spinner_tty_restores_handlers_after_exception():
     """TTY spinner 异常退出后不得遗留临时 handler。"""
     spinner = _load_module_from_path('style_gui_spinner_tty_exception', SPINNER_FILE)
@@ -655,3 +691,28 @@ def test_notify_fail_tty_outputs_clean_line_without_stderr(capsys):
     finally:
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+def test_notify_fail_tty_falls_back_to_colorama_init(capsys):
+    """旧版 Colorama 缺少新初始化 API 时，notify_fail 应回退到 init。"""
+    spinner = _load_module_from_path('style_gui_notify_fail_old_colorama', SPINNER_FILE)
+    modern_initializer = spinner.colorama.just_fix_windows_console
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+    for handler in original_handlers:
+        root_logger.removeHandler(handler)
+
+    try:
+        del spinner.colorama.just_fix_windows_console
+        with patch.object(spinner.colorama, 'init') as init_mock, \
+                patch.object(spinner.sys.stdout, 'isatty', return_value=True):
+            spinner.notify_fail('兼容失败消息')
+    finally:
+        spinner.colorama.just_fix_windows_console = modern_initializer
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
+
+    init_mock.assert_called_once_with()
+    captured = capsys.readouterr()
+    assert '兼容失败消息' in captured.out
+    assert captured.err == ''

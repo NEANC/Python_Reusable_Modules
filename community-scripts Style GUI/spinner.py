@@ -18,6 +18,15 @@ _HIDE_CURSOR = "\033[?25l"
 _SHOW_CURSOR = "\033[?25h"
 
 
+def _initialize_colorama():
+    """兼容初始化新旧版本的 Colorama。"""
+    initializer = getattr(colorama, 'just_fix_windows_console', None)
+    if initializer is not None:
+        initializer()
+        return
+    colorama.init()
+
+
 def _format_done(message):
     return colorama.Fore.GREEN + f"{_ICON_DONE}  {message}" + colorama.Style.RESET_ALL
 
@@ -212,7 +221,7 @@ def spinner_phase(text):
             raise
         return
 
-    colorama.just_fix_windows_console()
+    _initialize_colorama()
     console_handlers = _find_console_handlers()
     saved_levels = [(handler, handler.level) for handler in console_handlers]
     root_logger = logging.getLogger()
@@ -246,7 +255,7 @@ def notify_fail(message, exc_info=False):
         LOGGER.critical(f"{_ICON_FAIL}  {message}", exc_info=exc_info)
         return
 
-    colorama.just_fix_windows_console()
+    _initialize_colorama()
     console_handlers = _find_console_handlers()
     saved_levels = [(handler, handler.level) for handler in console_handlers]
     for handler in console_handlers:
