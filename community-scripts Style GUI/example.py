@@ -5,7 +5,7 @@ from banner import print_info
 from spinner import notify_fail, spinner_phase
 
 
-BANNER_ART = r""" ____  _         _        ____ _   _ ___ 
+BANNER_ART = r""" ____  _         _        ____ _   _ ___
 / ___|| |_ _   _| | ___  / ___| | | |_ _|
 \___ \| __| | | | |/ _ \| |  _| | | || |
  ___) | |_| |_| | |  __/| |_| | |_| || |

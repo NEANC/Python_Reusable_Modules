@@ -6,7 +6,7 @@ import unicodedata
 import colorama
 
 VERSION = "v0.0.0"
-DEFAULT_BANNER_ART = r"""  ____  _         _        ____ _   _ ___ 
+DEFAULT_BANNER_ART = r"""  ____  _         _        ____ _   _ ___
  / ___|| |_ _   _| | ___  / ___| | | |_ _|
  \___ \| __| | | | |/ _ \| |  _| | | || |
   ___) | |_| |_| | |  __/| |_| | |_| || |
