@@ -88,15 +88,10 @@ def test_banner_print_info_without_arguments_uses_defaults(capsys):
 def test_banner_print_info_falls_back_to_colorama_init(capsys):
     """旧版 Colorama 缺少新初始化 API 时，banner 应回退到 init。"""
     banner = _load_module_from_path('style_gui_banner_old_colorama', BANNER_FILE)
-    modern_initializer = banner.colorama.just_fix_windows_console
-
-    try:
+    with patch.dict(banner.colorama.__dict__, {'just_fix_windows_console': MagicMock()}):
         del banner.colorama.just_fix_windows_console
         with patch.object(banner.colorama, 'init') as init_mock:
             banner.print_info(banner_art='')
-    finally:
-        banner.colorama.just_fix_windows_console = modern_initializer
-
     init_mock.assert_called_once_with()
     assert 'Application' in capsys.readouterr().out
 
@@ -373,7 +368,7 @@ def test_spinner_tty_system_exit_nonzero_finishes_failure():
     fake_spinner = MagicMock()
     try:
         with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner.colorama, 'just_fix_windows_console'), \
+                patch.object(spinner.colorama, 'just_fix_windows_console', create=True), \
                 patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
             try:
                 with spinner.spinner_phase('等待中...'):
@@ -529,7 +524,7 @@ def test_spinner_tty_initializes_colorama_and_restores_all_root_console_handlers
     fake_spinner = MagicMock()
     try:
         with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner.colorama, 'just_fix_windows_console') as colorama_mock, \
+                patch.object(spinner.colorama, 'just_fix_windows_console', create=True) as colorama_mock, \
                 patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner.spinner_phase('等待中...') as sp:
                 sp.write_done('完成一部分')
@@ -549,18 +544,15 @@ def test_spinner_tty_initializes_colorama_and_restores_all_root_console_handlers
 def test_spinner_tty_falls_back_to_colorama_init():
     """旧版 Colorama 缺少新初始化 API 时，TTY spinner 应回退到 init。"""
     spinner = _load_module_from_path('style_gui_spinner_old_colorama', SPINNER_FILE)
-    modern_initializer = spinner.colorama.just_fix_windows_console
     fake_spinner = MagicMock()
 
-    try:
+    with patch.dict(spinner.colorama.__dict__, {'just_fix_windows_console': MagicMock()}):
         del spinner.colorama.just_fix_windows_console
         with patch.object(spinner.colorama, 'init') as init_mock, \
                 patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
                 patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner.spinner_phase('等待中...') as handle:
                 handle.done('完成')
-    finally:
-        spinner.colorama.just_fix_windows_console = modern_initializer
 
     init_mock.assert_called_once_with()
     fake_spinner.start.assert_called_once_with()
@@ -578,7 +570,7 @@ def test_spinner_tty_restores_handlers_after_exception():
     fake_spinner = MagicMock()
     try:
         with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner.colorama, 'just_fix_windows_console'), \
+                patch.object(spinner.colorama, 'just_fix_windows_console', create=True), \
                 patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
             try:
                 with spinner.spinner_phase('等待中...'):
@@ -621,7 +613,7 @@ def test_spinner_tty_system_exit_finishes_success(caplog):
     fake_spinner = MagicMock()
     try:
         with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner.colorama, 'just_fix_windows_console'), \
+                patch.object(spinner.colorama, 'just_fix_windows_console', create=True), \
                 patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
             try:
                 with spinner.spinner_phase('等待中...'):
@@ -681,7 +673,7 @@ def test_notify_fail_tty_outputs_clean_line_without_stderr(capsys):
 
     try:
         with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner.colorama, 'just_fix_windows_console'):
+                patch.object(spinner.colorama, 'just_fix_windows_console', create=True):
             spinner.notify_fail('测试失败消息')
 
         captured = capsys.readouterr()
@@ -696,23 +688,22 @@ def test_notify_fail_tty_outputs_clean_line_without_stderr(capsys):
 def test_notify_fail_tty_falls_back_to_colorama_init(capsys):
     """旧版 Colorama 缺少新初始化 API 时，notify_fail 应回退到 init。"""
     spinner = _load_module_from_path('style_gui_notify_fail_old_colorama', SPINNER_FILE)
-    modern_initializer = spinner.colorama.just_fix_windows_console
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
     for handler in original_handlers:
         root_logger.removeHandler(handler)
 
     try:
-        del spinner.colorama.just_fix_windows_console
-        with patch.object(spinner.colorama, 'init') as init_mock, \
-                patch.object(spinner.sys.stdout, 'isatty', return_value=True):
-            spinner.notify_fail('兼容失败消息')
+        with patch.dict(spinner.colorama.__dict__, {'just_fix_windows_console': MagicMock()}):
+            del spinner.colorama.just_fix_windows_console
+            with patch.object(spinner.colorama, 'init') as init_mock, \
+                    patch.object(spinner.sys.stdout, 'isatty', return_value=True):
+                spinner.notify_fail('兼容失败消息')
+            init_mock.assert_called_once_with()
     finally:
-        spinner.colorama.just_fix_windows_console = modern_initializer
         for handler in original_handlers:
             root_logger.addHandler(handler)
 
-    init_mock.assert_called_once_with()
     captured = capsys.readouterr()
     assert '兼容失败消息' in captured.out
     assert captured.err == ''
